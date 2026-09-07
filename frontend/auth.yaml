@@ -1,0 +1,10 @@
+credentials:
+  usernames:
+    admin:
+      email: admin@example.com
+      name: Admin
+      password: $2b$12$wmacqidL4d20Dy5zhkHoieosAcBGjscqWuvi60Fgy55rXrZsh8Xx2
+cookie:
+  expiry_days: 30
+  key: sovereign_ai_secret_key_production_32chars_2026
+  name: sovereign_ai_cookie

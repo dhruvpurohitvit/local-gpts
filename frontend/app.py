@@ -15,6 +15,9 @@ st.set_page_config(
     layout="wide"
 )
 
+from frontend.auth_helper import check_auth
+check_auth()
+
 
 # ============================================================
 # SESSION STATE
@@ -108,6 +111,80 @@ with st.sidebar:
 
     st.divider()
 
+    # ========================================================
+    # MODEL CONFIGURATION (LM STUDIO STYLE)
+    # ========================================================
+    st.subheader("🧠 Model Selection")
+    
+    # Fetch all models from inference engine and downloads
+    detected_models = []
+    try:
+        r = requests.get(f"{API_BASE_URL}/models/list", timeout=3)
+        if r.status_code == 200:
+            detected_models = r.json()
+    except Exception:
+        pass
+
+    model_ids = [m["id"] for m in detected_models]
+
+    # Mode Selector: Auto-Router vs Explicit Model
+    selection_mode = st.radio(
+        "Routing Mode",
+        options=["🤖 Auto-Detect (Smart Router)", "🎯 Manual Model Selection"],
+        index=0,
+        help="Auto-Detect routes automatically (coding -> coder model, images -> vision model). Manual lets you force any single model."
+    )
+
+    if selection_mode == "🤖 Auto-Detect (Smart Router)":
+        st.session_state["model_id"] = "auto"
+        st.success("🟢 Auto-Routing Active (Qwen General / Coder / Vision)")
+        with st.expander("ℹ️ Models in Auto Pool"):
+            for m in detected_models:
+                st.caption(f"• **`{m['id']}`** ({m.get('provider', 'Local')} - {m.get('size', '')})")
+    else:
+        if not model_ids:
+            st.warning("No local models detected. Pull one from the Model Hub!")
+            st.session_state["model_id"] = "auto"
+        else:
+            def format_model_label(mid):
+                m_info = next((item for item in detected_models if item["id"] == mid), None)
+                if m_info:
+                    return f"{mid} ({m_info.get('size', 'ready')})"
+                return mid
+
+            selected_choice = st.selectbox(
+                "Select Model to Chat With",
+                options=model_ids,
+                index=0,
+                format_func=format_model_label,
+                help="The prompt will be sent directly to this model."
+            )
+            st.session_state["model_id"] = selected_choice
+            st.info(f"🎯 Direct Chat with: **`{selected_choice}`**")
+
+    # Hyperparameters
+    st.caption("Parameters")
+    st.session_state["temperature"] = st.slider(
+        "Temperature", 
+        0.0, 2.0, 0.0, 0.1,
+        help="Higher values make output more creative, lower values more deterministic."
+    )
+
+    st.session_state["num_ctx"] = st.slider(
+        "Context Window", 
+        2048, 32768, 8192, 1024,
+        help="Maximum token memory context for this session."
+    )
+
+    st.session_state["system_prompt"] = st.text_area(
+        "System Prompt",
+        value="",
+        placeholder="Override default system prompt...",
+        height=100
+    )
+
+    st.divider()
+
 
     # ========================================================
     # SESSION MANAGEMENT
@@ -151,8 +228,7 @@ with st.sidebar:
         st.rerun()
 
 
-    st.divider()
-
+    # Model Settings moved up
 
     # ========================================================
     # NETWORK SENTRY
@@ -492,7 +568,11 @@ if prompt:
 
                 form_data = {
                     "prompt": prompt,
-                    "session_id": st.session_state.session_id
+                    "session_id": st.session_state.session_id,
+                    "model_id": st.session_state.get("model_id", "auto"),
+                    "temperature": st.session_state.get("temperature", 0.0),
+                    "num_ctx": st.session_state.get("num_ctx", 8192),
+                    "system_prompt": st.session_state.get("system_prompt", "")
                 }
 
 

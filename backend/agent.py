@@ -50,6 +50,7 @@ class AgentState(TypedDict):
     session_id: str
     prompt: str
     file_path: Optional[str]
+    config: dict
 
     selected_model: str
     rag_context: str
@@ -65,6 +66,7 @@ class AgentState(TypedDict):
     artifact_type: str
     artifact_name: str
     artifact_path: str
+
 
 
 # ==========================================================
@@ -637,15 +639,30 @@ class SovereignAgent:
     # ROUTER NODE
     # ==========================================================
 
-    def router_node(
-        self,
-        state: AgentState
-    ):
+    def router_node(self, state: AgentState):
+        from backend.logger import log
+        config = state.get("config", {})
+        requested_model = config.get("model_id", "auto")
+        
+        if requested_model != "auto" and requested_model != "":
+            log.info(f"[ROUTER] User explicitly requested model: {requested_model}")
+            return {"selected_model": requested_model}
 
-        selected_model = self.router.route(
+        category = self.router.route(
             prompt=state["prompt"],
             file_path=state["file_path"]
         )
+        
+        # Simple mapping: in a real production LM Studio clone, you'd map tags.
+        # Here we just pick some known models or defaults.
+        model_mapping = {
+            "general": "qwen2.5:3b",
+            "coder": "qwen2.5-coder:3b",
+            "vision": "qwen2.5vl:7b"
+        }
+        
+        selected_model = model_mapping.get(category, "qwen2.5:3b")
+        log.info(f"[ROUTER] Auto-routed category '{category}' -> {selected_model}")
 
         return {
             "selected_model": selected_model
@@ -723,25 +740,19 @@ class SovereignAgent:
     # ARTIFACT NODE
     # ==========================================================
 
-    def artifact_node(
-        self,
-        state: AgentState
-    ):
-
-        artifact_type = self.detect_artifact_intent(
-            state["prompt"]
-        )
-
-        workspace_path = self.get_workspace_path(
-            state["session_id"]
-        )
-
+    def artifact_node(self, state: AgentState):
+        from backend.model_manager import model_manager
+        
+        artifact_type = self.detect_artifact_intent(state["prompt"])
+        workspace_path = self.get_workspace_path(state["session_id"])
         prompt = state["prompt"]
 
-        llm = ChatOllama(
-            model="qwen2.5:3b",
-            temperature=0
-        )
+        config = state.get("config", {})
+        temp = config.get("temperature", 0.0)
+        ctx = config.get("num_ctx", 8192)
+        model_name = state.get("selected_model", "qwen2.5:3b")
+
+        llm = model_manager.get_llm(model_name, temperature=temp, num_ctx=ctx)
 
         # --------------------------------------------------
         # WORD
@@ -1009,17 +1020,17 @@ Return ONLY valid JSON:
     # LLM NODE
     # ==========================================================
 
-    def llm_node(
-        self,
-        state: AgentState
-    ):
+    def llm_node(self, state: AgentState):
+        from backend.model_manager import model_manager
+        from backend.logger import log
 
         model_name = state["selected_model"]
+        config = state.get("config", {})
+        temp = config.get("temperature", 0.0)
+        ctx = config.get("num_ctx", 8192)
 
-        llm = ChatOllama(
-            model=model_name,
-            temperature=0
-        )
+        log.info(f"[LLM] Creating client for {model_name} with temp={temp}, ctx={ctx}")
+        llm = model_manager.get_llm(model_name, temperature=temp, num_ctx=ctx)
 
         history_text = self._get_history_text(
             state["session_id"]
@@ -1089,90 +1100,50 @@ the user explicitly requests programming help.
 """
 
 
-        llm_prompt = f"""
-You are the local assistant for Sovereign AI Workbench.
+        system_prompt = config.get("system_prompt", "")
+        if system_prompt:
+            instruction += f"\n\nUSER SYSTEM PROMPT:\n{system_prompt}\n"
 
-You operate completely locally.
+        # ==================================================
+        # PROMPT FORMATTING (CHAT MESSAGES)
+        # ==================================================
+        from langchain_core.messages import SystemMessage
 
-CONVERSATION HISTORY:
+        system_content = f"""You are the local assistant for Sovereign AI Workbench. You operate completely locally.
 
-{history_text}
-
-LOCAL RAG CONTEXT:
-
-{state["rag_context"]}
-
-USER REQUEST:
-
-{state["prompt"]}
-
-UPLOADED CODE CONTENT:
-
-{uploaded_code if uploaded_code else "No code file uploaded."}
-
-{instruction}
-
-GENERAL RULES:
-
+RULES:
 - Do not claim internet access.
 - Do not use external APIs.
-- If an image is attached, analyze the ACTUAL image.
-- Do not say the image is unavailable when a valid image file
-  has been provided.
-"""
+{instruction}"""
 
+        if state.get("rag_context"):
+            system_content += f"\n\nLOCAL RAG CONTEXT:\n{state['rag_context']}"
 
-        # ==================================================
-        # MULTIMODAL IMAGE INPUT
-        # ==================================================
+        user_text = state["prompt"]
+        if uploaded_code:
+            user_text += f"\n\nUPLOADED CODE:\n{uploaded_code}"
 
-        if self.is_image_file(
-            state["file_path"]
-        ):
-
+        if self.is_image_file(state["file_path"]):
             try:
-
-                image_data = self._encode_image(
-                    state["file_path"]
-                )
-
+                image_data = self._encode_image(state["file_path"])
                 message = HumanMessage(
                     content=[
-                        {
-                            "type": "text",
-                            "text": llm_prompt
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": image_data
-                        }
+                        {"type": "text", "text": user_text},
+                        {"type": "image_url", "image_url": image_data}
                     ]
                 )
-
-                response = llm.invoke(
-                    [message]
-                )
-
+                response = llm.invoke([SystemMessage(content=system_content), message])
             except Exception as error:
-
                 return {
-
-                    "generated_code": (
-                        f"Unable to process uploaded image: {error}"
-                    ),
-
+                    "generated_code": f"Unable to process uploaded image: {error}",
                     "detected_language": ""
                 }
-
-        # ==================================================
-        # NORMAL TEXT INPUT
-        # ==================================================
-
         else:
-
-            response = llm.invoke(
-                llm_prompt
-            )
+            messages = [
+                SystemMessage(content=system_content),
+                HumanMessage(content=user_text)
+            ]
+            response = llm.invoke(messages)
 
 
         output = response.content.strip()
@@ -1270,31 +1241,20 @@ GENERAL RULES:
     # SELF CORRECTION
     # ==========================================================
 
-    def self_correct_node(
-        self,
-        state: AgentState
-    ):
-
+    def self_correct_node(self, state: AgentState):
+        from backend.model_manager import model_manager
+        
         previous_code = state["generated_code"]
+        language = state.get("detected_language", "python")
+        error_message = state["tool_result"].get("stderr", "Unknown execution error")
+        new_error_count = state["error_count"] + 1
 
-        language = state.get(
-            "detected_language",
-            "python"
-        )
+        config = state.get("config", {})
+        temp = config.get("temperature", 0.0)
+        ctx = config.get("num_ctx", 8192)
+        model_name = state.get("selected_model", "qwen2.5-coder:3b")
 
-        error_message = state["tool_result"].get(
-            "stderr",
-            "Unknown execution error"
-        )
-
-        new_error_count = (
-            state["error_count"] + 1
-        )
-
-        llm = ChatOllama(
-            model="qwen2.5-coder:3b",
-            temperature=0
-        )
+        llm = model_manager.get_llm(model_name, temperature=temp, num_ctx=ctx)
 
         correction_prompt = f"""
 You are a {language} debugging assistant.
@@ -1509,7 +1469,12 @@ No explanations.
                 model_used=tool_name
             )
 
-        return {}
+        return {
+            "final_output": state.get("final_output", ""),
+            "selected_model": state.get("selected_model", ""),
+            "generated_code": state.get("generated_code", ""),
+            "tool_result": state.get("tool_result", {}),
+        }
 
 
     # ==========================================================
@@ -1723,55 +1688,38 @@ No explanations.
         self,
         prompt: str,
         session_id: str = None,
-        file_path: str = None
+        file_path: str = None,
+        config: dict = None
     ):
 
         if session_id is None:
-
             session_id = db.create_session()
-
         elif not db.session_exists(session_id):
+            db.create_session_with_id(session_id)
 
-            db.create_session_with_id(
-                session_id
-            )
-
-        self.get_workspace_path(
-            session_id
-        )
+        self.get_workspace_path(session_id)
+        
+        if config is None:
+            config = {"model_id": "auto", "temperature": 0.0, "num_ctx": 8192, "system_prompt": ""}
 
         initial_state = {
-
             "session_id": session_id,
-
             "prompt": prompt,
-
             "file_path": file_path,
-
-            "selected_model": "",
-
+            "config": config,
+            "selected_model": config.get("model_id", "auto"),
             "rag_context": "",
-
             "generated_code": "",
-
             "detected_language": "",
-
             "tool_result": {},
-
             "error_count": 0,
-
             "final_output": "",
-
             "artifact_type": "",
-
             "artifact_name": "",
-
             "artifact_path": ""
         }
 
-        return self.graph.invoke(
-            initial_state
-        )
+        return self.graph.invoke(initial_state)
 
 
     # ==========================================================

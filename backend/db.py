@@ -684,18 +684,18 @@ class DatabaseManager:
     # NETWORK SENTRY LOGGING
     # ==========================================================
 
-    def log_network_status(
+    def save_network_log(
         self,
         workbench_airgapped,
         workbench_status,
-        workbench_external_socket_count,
+        workbench_external_count,
         system_airgapped,
         system_status,
-        system_external_socket_count
+        system_external_count,
+        details=None
     ):
 
         connection = self.get_connection()
-
         cursor = connection.cursor()
 
         cursor.execute("""
@@ -713,16 +713,39 @@ class DatabaseManager:
             datetime.now().isoformat(),
             int(workbench_airgapped),
             workbench_status,
-            workbench_external_socket_count,
+            workbench_external_count,
             int(system_airgapped),
             system_status,
-            system_external_socket_count
+            system_external_count
         ))
-
+        log_id = cursor.lastrowid
         connection.commit()
-
         connection.close()
+        return log_id
 
+    # ==========================================================
+    # PROJECTS & TASKS
+    # ==========================================================
+    def create_project(self, name, description=""):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, description TEXT, created_at TIMESTAMP)")
+        cursor.execute("INSERT INTO projects (name, description, created_at) VALUES (?, ?, ?)", (name, description, datetime.now().isoformat()))
+        p_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return p_id
+
+    def get_projects(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM projects ORDER BY id DESC")
+            rows = cursor.fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+        conn.close()
+        return [dict(r) for r in rows]
 
 # ==========================================================
 # GLOBAL DATABASE INSTANCE
