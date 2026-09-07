@@ -1,4 +1,4 @@
-# 🛡️ Sovereign AI Workbench
+#  Sovereign AI Workbench
 
 ### Secure • Local • Private • Offline AI Assistant
 
@@ -8,11 +8,55 @@ The system enables users to interact with multiple local AI models, analyze docu
 
 Built as a project for **Smart India Hackathon (SIH) 2026**.
 
+Viewed README.md:1-36
+Ran command: `Add-Content -Path "C:\Users\Asus\OneDrive\Desktop\pypy\sih\local-gpts\README.md" -Value "`n`n## 💻 Quick Start & Installation`n`nFollow these steps to clone and run the Sovereign AI Workbench locally on your machine:`n`n### 1. Clone the repository`n```bash`ngit clone https://github.com/dhruvpurohitvit/local-gpts.git`ncd local-gpts`n````n`n### 2. Install dependencies`nMake sure you have Python 3.10+ installed. Then install the required packages:`n```bash`npip install -r requirements.txt`n````n`n### 3. Ensure Ollama is running`nYou will need [Ollama](https://ollama.com/) installed to run the local models. Make sure Ollama is running in the background and pull the required models:`n```bash`nollama pull qwen2.5:3b`nollama pull qwen2.5-coder:3b`nollama pull qwen2.5vl:7b`n````n`n### 4. Run the Backend API (Terminal 1)`nOpen a terminal and start the FastAPI backend server:`n```bash`ncd local-gpts`nuvicorn backend.api:app --reload --port 8000`n````n`n### 5. Run the Frontend UI (Terminal 2)`nOpen a **second** terminal and start the Streamlit frontend:`n```bash`ncd local-gpts`npython -m streamlit run frontend/app.py --server.port 8501`n````n`nThat's it! 🚀 Open **http://localhost:8501** in your browser. Default login credentials:`n- **Username:** `admin``n- **Password:** `admin123``n" ; git add README.md ; git commit -m "Add Quick Start guide to README" ; git push origin main`
+
+I've gone ahead and appended this directly to your `README.md` and pushed it to GitHub for you! 
+
+Here are the exact commands I added for the easiest way anyone can clone and run your project:
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/dhruvpurohitvit/local-gpts.git
+cd local-gpts
+```
+
+### 2. Install dependencies
+Make sure Python 3.10+ is installed, then run:
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Setup Ollama (Local AI Engine)
+You need [Ollama](https://ollama.com/) installed to run the models locally. Pull the default models:
+```bash
+ollama pull qwen2.5:3b
+ollama pull qwen2.5-coder:3b
+ollama pull qwen2.5vl:7b
+```
+
+### 4. Run the Backend API (Terminal 1)
+Start the FastAPI server:
+```bash
+uvicorn backend.api:app --reload --port 8000
+```
+
+### 5. Run the Frontend UI (Terminal 2)
+Open a **new/second** terminal in the same folder and run Streamlit:
+```bash
+python -m streamlit run frontend/app.py --server.port 8501
+```
+
+**That's it! ** 
+Open **http://localhost:8501** in your browser and log in with:
+- **Username:** `admin`
+- **Password:** `admin123`
+
 ---
 
-# 🚀 Features
+#  Features
 
-## 🤖 Local Multi-Model AI Routing
+##  Local Multi-Model AI Routing
 
 The system automatically selects the appropriate local model depending on the task.
 
