@@ -35,16 +35,16 @@ class TaskRouter:
         if file_path:
             ext = os.path.splitext(file_path)[1].lower()
             if ext in self.IMAGE_EXTENSIONS or ext in self.PDF_EXTENSIONS:
-                return "vision"
+                return "qwen2.5vl:7b"
             if ext in self.CODE_EXTENSIONS:
-                return "coder"
-            return "general"
+                return "qwen2.5-coder:3b"
+            return "qwen2.5:3b"
 
         if any(kw in prompt_lower for kw in self.VISION_KEYWORDS):
-            return "vision"
+            return "qwen2.5vl:7b"
 
         for pattern in self.CODING_PATTERNS:
             if re.search(pattern, prompt_lower, re.IGNORECASE):
-                return "coder"
+                return "qwen2.5-coder:3b"
 
-        return "general"
+        return "qwen2.5:3b"

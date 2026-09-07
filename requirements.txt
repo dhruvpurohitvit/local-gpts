@@ -5,6 +5,7 @@
 langchain
 langchain-core
 langchain-ollama
+langchain-openai
 langgraph
 
 
@@ -49,6 +50,8 @@ pydantic
 
 requests
 httpx
+huggingface-hub
+psutil
 
 
 # ==========================================================
@@ -63,3 +66,12 @@ python-dotenv
 # ==========================================================
 
 Pillow
+
+# ==========================================================
+# TESTING / LEGACY STREAMLIT UI / GPU STATUS
+# ==========================================================
+
+pytest
+streamlit
+streamlit-authenticator
+pynvml

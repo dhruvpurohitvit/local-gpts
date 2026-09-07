@@ -653,15 +653,13 @@ class SovereignAgent:
             file_path=state["file_path"]
         )
         
-        # Simple mapping: in a real production LM Studio clone, you'd map tags.
-        # Here we just pick some known models or defaults.
         model_mapping = {
             "general": "qwen2.5:3b",
             "coder": "qwen2.5-coder:3b",
             "vision": "qwen2.5vl:7b"
         }
-        
-        selected_model = model_mapping.get(category, "qwen2.5:3b")
+
+        selected_model = model_mapping.get(category, category)
         log.info(f"[ROUTER] Auto-routed category '{category}' -> {selected_model}")
 
         return {
