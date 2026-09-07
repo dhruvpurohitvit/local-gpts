@@ -4,8 +4,8 @@ import re
 class TaskRouter:
     IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
     CODE_EXTENSIONS = {".py", ".js", ".java", ".cpp", ".c", ".html", ".css", ".sql", ".sh", ".json"}
-    TEXT_EXTENSIONS = {".txt", ".md", ".csv"}
-    PDF_EXTENSIONS = {".pdf"}
+    # PDF, CSV, TXT all go to general model (they are RAG-ingested, not vision)
+    DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".md", ".csv"}
 
     VISION_KEYWORDS = ["image", "photo", "picture", "screenshot", "diagram", "graph", "chart", "visual"]
     
@@ -34,17 +34,23 @@ class TaskRouter:
 
         if file_path:
             ext = os.path.splitext(file_path)[1].lower()
-            if ext in self.IMAGE_EXTENSIONS or ext in self.PDF_EXTENSIONS:
-                return "qwen2.5vl:7b"
+            # Only actual image files go to the vision model
+            if ext in self.IMAGE_EXTENSIONS:
+                return "vision"
+            # Code files go to the code model
             if ext in self.CODE_EXTENSIONS:
-                return "qwen2.5-coder:3b"
-            return "qwen2.5:3b"
+                return "coder"
+            # PDF, CSV, TXT — use general model (content is in RAG context)
+            if ext in self.DOCUMENT_EXTENSIONS:
+                return "general"
+            # Unknown extension — default to general
+            return "general"
 
         if any(kw in prompt_lower for kw in self.VISION_KEYWORDS):
-            return "qwen2.5vl:7b"
+            return "vision"
 
         for pattern in self.CODING_PATTERNS:
             if re.search(pattern, prompt_lower, re.IGNORECASE):
-                return "qwen2.5-coder:3b"
+                return "coder"
 
-        return "qwen2.5:3b"
+        return "general"

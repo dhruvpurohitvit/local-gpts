@@ -1,33 +1,73 @@
-# Sovereign AI React Frontend
+# Sovereign AI Workbench — Quick Setup
 
-This Vite app is the React replacement for the Streamlit UI. It talks to the existing FastAPI backend; set `VITE_API_BASE_URL` only when the API is not at `http://127.0.0.1:8000`.
+## Default login credentials
 
-```powershell
+| Username | Password  |
+|----------|-----------|
+| `admin`  | `admin123` |
+
+> Change it after first login via **Settings → Change password**
+
+---
+
+## Running (development — single machine)
+
+```bash
+# Terminal 1 — Backend
+cd local-gpts
+.venv\Scripts\activate
+uvicorn backend.api:app --reload --port 8000
+
+# Terminal 2 — Frontend
 cd frontend-react
-npm install
 npm run dev
 ```
 
-The backend must be started separately:
+Open: http://localhost:5173
 
+---
+
+## Running across a LAN (teammates on same network)
+
+### Step 1 — Find your LAN IP
 ```powershell
-uvicorn backend.api:app --reload --port 8000
+ipconfig   # look for IPv4 address, e.g. 192.168.1.42
 ```
 
-## Migration Map
+### Step 2 — Start the backend bound to all interfaces
+```bash
+uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload
+```
 
-| Streamlit capability | Backend API | React surface |
-| --- | --- | --- |
-| Chat, history, session reset | `/chat`, `/history/{session_id}`, `/sessions/new` | Workbench chat |
-| Model routing and parameters | `/models/list`, multipart `/chat` | Workbench sidebar |
-| Document/image/code upload and RAG ingestion | multipart `/chat` | Workbench attachment control |
-| Generated code and tool result | `/chat` response fields | Assistant result details |
-| Artifacts and downloads | `/artifacts/{session_id}`, `/download/...` | Artifact list |
-| Hugging Face search/files/downloads | `/models/search`, `/models/files`, `/models/download`, `/models/download/progress/...` | Model hub |
-| Active/downloaded models | `/models/list`, `/models/downloaded` | Model hub lists |
-| Ollama quick pull/load | `/models/pull`, `/models/load` | Model hub actions |
-| Projects | `/projects` | Projects page |
-| Network sentry | `/sentry/status` | Sidebar and system status |
-| GPU and engine status | `/system/gpu`, `/models/list` | System status page |
+### Step 3 — Tell the frontend where the backend is
+Create `frontend-react/.env.local`:
+```
+VITE_BACKEND_URL=http://192.168.1.42:8000
+```
 
-No frontend secret, telemetry SDK, CDN asset, or cloud AI API is used. Hugging Face access remains an explicit existing backend model-hub operation.
+### Step 4 — Tell the backend to allow your LAN origin
+Create `local-gpts/.env` (or set in your shell):
+```
+CORS_ALLOWED_ORIGINS=http://192.168.1.42:5173,http://localhost:5173
+```
+
+### Step 5 — Start the frontend
+```bash
+cd frontend-react
+npm run dev
+```
+
+Teammates open: `http://192.168.1.42:5173`  
+(Vite now binds to `0.0.0.0` — accessible from the LAN.)
+
+---
+
+## File uploads & RAG (document Q&A)
+
+Supported formats: **PDF, TXT, MD, CSV**
+
+1. Click **Attach file** in the chat
+2. Upload your document
+3. Ask a question about it — the system extracts the content and injects it into the model's context
+
+> Each session's documents are isolated — uploading a file in one chat session does NOT affect another session.

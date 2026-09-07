@@ -240,13 +240,13 @@ def chat_endpoint(
             with open(file_path, "wb") as f:
                 f.write(file.file.read())
             
-            # Ingest RAG documents
+            # Ingest RAG documents — PDF, plain text, markdown, AND CSV
             ext = os.path.splitext(uploaded_file_name)[1].lower()
-            if ext in [".pdf", ".txt", ".md"]:
+            if ext in [".pdf", ".txt", ".md", ".csv"]:
                 try:
                     from backend.rag_engine import ingest_document
-                    chunks = ingest_document(file_path)
-                    log.info(f"Ingested {uploaded_file_name} into RAG ({chunks} chunks).")
+                    chunks = ingest_document(file_path, session_id=session_id)
+                    log.info(f"Ingested {uploaded_file_name} into RAG ({chunks} chunks) for session {session_id}.")
                 except Exception as e:
                     log.error(f"Failed to ingest {uploaded_file_name} into RAG: {e}")
 

@@ -621,14 +621,13 @@ class SovereignAgent:
 
             context = query_rag(
                 state["prompt"],
-                top_k=3
+                session_id=state.get("session_id", "global"),
+                top_k=5
             )
 
         except Exception:
 
-            context = (
-                "No relevant local RAG context available."
-            )
+            context = ""
 
         return {
             "rag_context": context
@@ -653,18 +652,21 @@ class SovereignAgent:
             file_path=state["file_path"]
         )
         
+        # Map category strings to actual Ollama model tags
         model_mapping = {
             "general": "qwen2.5:3b",
-            "coder": "qwen2.5-coder:3b",
-            "vision": "qwen2.5vl:7b"
+            "coder":   "qwen2.5-coder:3b",
+            "vision":  "qwen2.5vl:7b",
+            # Legacy direct model names (in case old router values slip through)
+            "qwen2.5:3b":        "qwen2.5:3b",
+            "qwen2.5-coder:3b":  "qwen2.5-coder:3b",
+            "qwen2.5vl:7b":      "qwen2.5vl:7b",
         }
 
-        selected_model = model_mapping.get(category, category)
-        log.info(f"[ROUTER] Auto-routed category '{category}' -> {selected_model}")
+        selected_model = model_mapping.get(category, "qwen2.5:3b")
+        log.info(f"[ROUTER] category='{category}' -> model='{selected_model}'")
 
-        return {
-            "selected_model": selected_model
-        }
+        return {"selected_model": selected_model}
 
 
     # ==========================================================
@@ -1030,96 +1032,113 @@ Return ONLY valid JSON:
         log.info(f"[LLM] Creating client for {model_name} with temp={temp}, ctx={ctx}")
         llm = model_manager.get_llm(model_name, temperature=temp, num_ctx=ctx)
 
-        history_text = self._get_history_text(
-            state["session_id"]
-        )
+        history_text = self._get_history_text(state["session_id"])
 
-        code_request = self.is_code_request(
-            state["prompt"]
-        )
-
-        execution_request = self.is_execution_request(
-            state["prompt"]
-        )
+        code_request = self.is_code_request(state["prompt"])
+        execution_request = self.is_execution_request(state["prompt"])
 
         # --------------------------------------------------
-        # CODE FILE INPUT
+        # CODE FILE — read content directly
         # --------------------------------------------------
 
         uploaded_code = ""
 
-        if self.is_code_file(
-            state["file_path"]
-        ):
-
+        if self.is_code_file(state["file_path"]):
             try:
-
-                with open(
-                    state["file_path"],
-                    "r",
-                    encoding="utf-8"
-                ) as file:
-
+                with open(state["file_path"], "r", encoding="utf-8") as file:
                     uploaded_code = file.read()
-
             except Exception as error:
-
-                uploaded_code = (
-                    f"Could not read uploaded file: {error}"
-                )
-
+                uploaded_code = f"Could not read uploaded file: {error}"
 
         # --------------------------------------------------
-        # INSTRUCTIONS
+        # DOCUMENT FILE — inject full text for small files
+        # as a reliable fallback alongside RAG context
+        # --------------------------------------------------
+
+        direct_doc_text = ""
+        file_path = state.get("file_path")
+
+        if file_path and os.path.exists(file_path):
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in (".pdf", ".txt", ".md", ".csv"):
+                try:
+                    # Only inject directly if the file is reasonably small
+                    # (under 40 000 chars) — for large files RAG is enough
+                    from backend.rag_engine import get_rag_engine
+                    engine = get_rag_engine()
+                    raw_text = engine._extract_text(file_path)
+                    if len(raw_text) <= 40_000:
+                        direct_doc_text = raw_text
+                except Exception as err:
+                    log.warning(f"[LLM] Could not read file for direct injection: {err}")
+
+        # --------------------------------------------------
+        # SYSTEM INSTRUCTIONS
         # --------------------------------------------------
 
         if code_request or execution_request:
-
-            instruction = """
-The user is requesting programming help.
-
+            instruction = """The user is requesting programming help.
 If code is requested, return ONLY valid source code.
-
-Do not include:
-- markdown fences
-- explanations before the code
-- explanations after the code
-
-Generate complete executable code when appropriate.
-"""
-
+Do not include markdown fences, explanations before or after the code.
+Generate complete executable code when appropriate."""
         else:
-
-            instruction = """
-Answer naturally and clearly.
-
-Do not generate executable source code unless
-the user explicitly requests programming help.
-"""
-
+            instruction = """Answer naturally and clearly based on the provided context.
+Do not generate executable source code unless the user explicitly requests programming help."""
 
         system_prompt = config.get("system_prompt", "")
         if system_prompt:
             instruction += f"\n\nUSER SYSTEM PROMPT:\n{system_prompt}\n"
 
-        # ==================================================
-        # PROMPT FORMATTING (CHAT MESSAGES)
-        # ==================================================
+        # --------------------------------------------------
+        # BUILD SYSTEM MESSAGE
+        # --------------------------------------------------
         from langchain_core.messages import SystemMessage
 
-        system_content = f"""You are the local assistant for Sovereign AI Workbench. You operate completely locally.
+        system_content = (
+            "You are the local assistant for Sovereign AI Workbench. "
+            "You operate completely locally.\n\n"
+            "RULES:\n"
+            "- Do not claim internet access.\n"
+            "- Do not use external APIs.\n"
+            f"{instruction}"
+        )
 
-RULES:
-- Do not claim internet access.
-- Do not use external APIs.
-{instruction}"""
+        # Inject RAG context (session-scoped document chunks)
+        rag_context = state.get("rag_context", "")
+        if rag_context and rag_context.strip():
+            system_content += (
+                "\n\n========== DOCUMENT CONTENT (from uploaded file) ==========\n"
+                "The following text was extracted from the document the user uploaded. "
+                "Use this as your PRIMARY source to answer the user's question.\n\n"
+                f"{rag_context}\n"
+                "===========================================================\n"
+                "\nAnswer the user's question based on the document content above. "
+                "If the answer is not in the document, say so clearly."
+            )
+        elif direct_doc_text:
+            # RAG returned nothing (e.g., embedding model unavailable) — use raw text
+            system_content += (
+                "\n\n========== DOCUMENT CONTENT (from uploaded file) ==========\n"
+                "The following text was extracted from the document the user uploaded. "
+                "Use this as your PRIMARY source to answer the user's question.\n\n"
+                f"{direct_doc_text}\n"
+                "===========================================================\n"
+                "\nAnswer the user's question based on the document content above. "
+                "If the answer is not in the document, say so clearly."
+            )
 
-        if state.get("rag_context"):
-            system_content += f"\n\nLOCAL RAG CONTEXT:\n{state['rag_context']}"
+        # --------------------------------------------------
+        # BUILD USER MESSAGE
+        # --------------------------------------------------
 
         user_text = state["prompt"]
+
         if uploaded_code:
             user_text += f"\n\nUPLOADED CODE:\n{uploaded_code}"
+
+        # --------------------------------------------------
+        # INVOKE LLM
+        # --------------------------------------------------
 
         if self.is_image_file(state["file_path"]):
             try:
@@ -1127,48 +1146,38 @@ RULES:
                 message = HumanMessage(
                     content=[
                         {"type": "text", "text": user_text},
-                        {"type": "image_url", "image_url": image_data}
+                        {"type": "image_url", "image_url": image_data},
                     ]
                 )
                 response = llm.invoke([SystemMessage(content=system_content), message])
             except Exception as error:
                 return {
                     "generated_code": f"Unable to process uploaded image: {error}",
-                    "detected_language": ""
+                    "detected_language": "",
                 }
         else:
             messages = [
                 SystemMessage(content=system_content),
-                HumanMessage(content=user_text)
+                HumanMessage(content=user_text),
             ]
             response = llm.invoke(messages)
-
 
         output = response.content.strip()
 
         if code_request or execution_request:
-
-            output = self._clean_code(
-                output
-            )
-
+            output = self._clean_code(output)
 
         language = ""
-
         if code_request or execution_request:
-
             language = self.detect_language(
                 prompt=state["prompt"],
                 code=output,
-                file_path=state["file_path"]
+                file_path=state["file_path"],
             )
 
-
         return {
-
             "generated_code": output,
-
-            "detected_language": language
+            "detected_language": language,
         }
 
 

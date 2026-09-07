@@ -20,10 +20,20 @@ async function request(path, options = {}) {
     : await response.text();
 
   if (!response.ok) {
-    const detail = typeof body === "object" ? body.detail : body;
+    // FastAPI detail can be:
+    //   - a plain string  → "Invalid username or password"
+    //   - an array        → [{loc:[...], msg:"...", type:"..."}]  (validation errors)
+    //   - an object       → {some: "thing"}
+    // We always produce a human-readable string.
+    let detail = typeof body === "object" ? body?.detail : body;
+    if (Array.isArray(detail)) {
+      // Pydantic validation errors — join the human messages
+      detail = detail.map((e) => e?.msg || JSON.stringify(e)).join("; ");
+    } else if (detail && typeof detail === "object") {
+      detail = JSON.stringify(detail);
+    }
+
     if (response.status === 401 && !_skipAuthEvent) {
-      // A protected endpoint rejected our session — the cookie has expired.
-      // Notify the App so it can redirect to the login screen.
       window.dispatchEvent(new Event("sovereign-auth-expired"));
       throw new Error("Session expired. Please sign in again.");
     }
@@ -35,7 +45,13 @@ async function request(path, options = {}) {
 function formData(values) {
   const data = new FormData();
   Object.entries(values).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) data.append(key, String(value));
+    if (value === undefined || value === null) return;
+    // File and Blob objects must be appended directly — String(file) gives "[object File]"
+    if (value instanceof File || value instanceof Blob) {
+      data.append(key, value, value instanceof File ? value.name : undefined);
+    } else {
+      data.append(key, String(value));
+    }
   });
   return data;
 }
