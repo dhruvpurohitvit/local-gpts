@@ -88,7 +88,7 @@ def user_settings(username: str):
         "theme": user.get("theme") or "dark",
         "default_model": user.get("default_model") or "auto",
         "default_temperature": user.get("default_temperature") if user.get("default_temperature") is not None else 0.0,
-        "default_num_ctx": user.get("default_num_ctx") or 8192,
+        "default_num_ctx": user.get("default_num_ctx") or 16384,
         "default_system_prompt": user.get("default_system_prompt") or "",
         "default_landing_page": user.get("default_landing_page") or "chat",
         "session_retention_days": user.get("session_retention_days") or 30,

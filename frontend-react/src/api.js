@@ -129,7 +129,13 @@ export const api = {
     }),
   downloadProgress: (downloadId) =>
     request(`/models/download/progress/${encodeURIComponent(downloadId)}`),
+  cancelDownload: (downloadId) =>
+    request(`/models/download/${encodeURIComponent(downloadId)}`, { method: "DELETE" }),
   downloadedModels: () => request("/models/downloaded"),
+  deleteDownloadedModel: (filename) =>
+    request(`/models/downloaded/${encodeURIComponent(filename)}`, { method: "DELETE" }),
+  deleteOllamaModel: (modelName) =>
+    request(`/models/ollama/${encodeURIComponent(modelName)}`, { method: "DELETE" }),
   pullModel: (modelName) =>
     request("/models/pull", { method: "POST", body: formData({ model_name: modelName }) }),
   loadModel: (filename) =>
@@ -138,7 +144,45 @@ export const api = {
   // Projects
   projects: () => request("/projects"),
   createProject: (name, description) =>
-    request("/projects", { method: "POST", body: formData({ name, description }) }),
+    request("/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description }),
+    }),
+  getProject: (projectId) => request(`/projects/${projectId}`),
+  updateProject: (projectId, name, description) =>
+    request(`/projects/${projectId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description }),
+    }),
+  archiveProject: (projectId) =>
+    request(`/projects/${projectId}/archive`, { method: "POST" }),
+  deleteProject: (projectId) =>
+    request(`/projects/${projectId}`, { method: "DELETE" }),
+
+  // Project ↔ Session linking
+  attachSession: (projectId, sessionId) =>
+    request(`/projects/${projectId}/sessions/${sessionId}`, { method: "POST" }),
+  detachSession: (projectId, sessionId) =>
+    request(`/projects/${projectId}/sessions/${sessionId}`, { method: "DELETE" }),
+
+  // Tasks
+  tasks: (projectId) => request(`/projects/${projectId}/tasks`),
+  createTask: (projectId, title, description, status) =>
+    request(`/projects/${projectId}/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, description, status }),
+    }),
+  updateTask: (projectId, taskId, fields) =>
+    request(`/projects/${projectId}/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fields),
+    }),
+  deleteTask: (projectId, taskId) =>
+    request(`/projects/${projectId}/tasks/${taskId}`, { method: "DELETE" }),
 
   // System
   sentry: () => request("/sentry/status"),

@@ -46,32 +46,20 @@ class ModelManager:
             if resp.status_code == 200:
                 data = resp.json()
                 for m in data.get("models", []):
+                    details = m.get("details", {})
                     models.append({
                         "id": m["name"],
                         "name": m["name"],
                         "provider": "Ollama",
-                        "size": f"{m.get('size', 0) / (1024**3):.2f} GB"
+                        "size": f"{m.get('size', 0) / (1024**3):.2f} GB",
+                        "family": details.get("family", ""),
+                        "parameter_size": details.get("parameter_size", ""),
+                        "quantization_level": details.get("quantization_level", ""),
+                        "format": details.get("format", ""),
+                        "modified_at": m.get("modified_at", ""),
                     })
         except Exception as e:
             log.error(f"Failed to list Ollama models: {e}")
-
-        # Also include any downloaded GGUF / weights from models/downloads
-        try:
-            dl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", "downloads"))
-            if os.path.exists(dl_dir):
-                for fname in os.listdir(dl_dir):
-                    if (fname.endswith(".gguf") or fname.endswith(".safetensors")) and not fname.startswith("."):
-                        fpath = os.path.join(dl_dir, fname)
-                        size_mb = os.path.getsize(fpath) / (1024 * 1024)
-                        size_str = f"{size_mb:.1f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
-                        models.append({
-                            "id": fname,
-                            "name": fname,
-                            "provider": "Local Disk (models/downloads)",
-                            "size": size_str
-                        })
-        except Exception as e:
-            log.error(f"Failed to list downloaded models: {e}")
 
         return models
 

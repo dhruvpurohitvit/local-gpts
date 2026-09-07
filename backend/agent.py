@@ -314,56 +314,67 @@ class SovereignAgent:
         self,
         prompt: str
     ) -> str:
+        """
+        Detect whether the user wants to CREATE an artifact.
+        Must require an explicit creation verb — bare mentions of
+        'csv', 'pdf', 'docx' when the user is asking about an
+        uploaded file must NOT trigger artifact generation.
+        """
 
         prompt_lower = prompt.lower()
 
-        word_keywords = [
-            "word document",
-            "word report",
-            "create a word",
-            "generate a word",
-            "docx",
-            ".docx",
-            "microsoft word"
-        ]
+        # Explicit creation-verb patterns only — no bare format names
+        CREATION_VERBS = (
+            "create", "generate", "make", "build",
+            "write", "produce", "export", "draft"
+        )
 
-        powerpoint_keywords = [
-            "powerpoint",
-            "power point",
-            "presentation",
-            "pptx",
-            ".pptx",
-            "create slides",
-            "generate slides",
-            "make slides"
-        ]
+        def has_creation_verb() -> bool:
+            return any(v in prompt_lower for v in CREATION_VERBS)
 
-        csv_keywords = [
-            "csv",
-            ".csv",
-            "generate csv",
-            "create csv",
-            "build a csv",
-            "export table"
+        # PowerPoint — "presentation" is specific enough on its own
+        powerpoint_triggers = [
+            "powerpoint", "power point", "pptx", ".pptx",
+            "create slides", "generate slides", "make slides",
+            "make a presentation", "create a presentation",
+            "generate a presentation", "build a presentation",
         ]
-
-        if any(
-            keyword in prompt_lower
-            for keyword in powerpoint_keywords
-        ):
+        if any(kw in prompt_lower for kw in powerpoint_triggers):
             return "powerpoint"
 
-        if any(
-            keyword in prompt_lower
-            for keyword in csv_keywords
-        ):
+        # CSV — only when user explicitly asks to CREATE one
+        csv_creation_phrases = [
+            "generate csv", "create csv", "make csv", "build csv",
+            "export csv", "produce csv", "write csv",
+            "generate a csv", "create a csv", "make a csv",
+            "export table", "export as csv", "export to csv",
+            "generate .csv", "create .csv",
+        ]
+        if any(phrase in prompt_lower for phrase in csv_creation_phrases):
             return "csv"
 
-        if any(
-            keyword in prompt_lower
-            for keyword in word_keywords
-        ):
+        # Word — only when user explicitly asks to CREATE one
+        word_creation_phrases = [
+            "create a word", "generate a word", "make a word",
+            "write a word document", "create word document",
+            "generate word document", "make word document",
+            "create a docx", "generate a docx", "write a docx",
+            "create .docx", "generate .docx",
+            "create a report", "generate a report",
+            "write a report", "draft a report",
+        ]
+        if any(phrase in prompt_lower for phrase in word_creation_phrases):
             return "word"
+
+        # Fallback: if there's a creation verb AND a format keyword,
+        # treat it as artifact intent even if not in the phrase list
+        if has_creation_verb():
+            if any(kw in prompt_lower for kw in ("powerpoint", "pptx", "presentation")):
+                return "powerpoint"
+            if any(kw in prompt_lower for kw in ("csv spreadsheet", "csv file", "csv data")):
+                return "csv"
+            if any(kw in prompt_lower for kw in ("word document", "word report", "microsoft word", "docx")):
+                return "word"
 
         return ""
 
@@ -1027,12 +1038,13 @@ Return ONLY valid JSON:
         model_name = state["selected_model"]
         config = state.get("config", {})
         temp = config.get("temperature", 0.0)
-        ctx = config.get("num_ctx", 8192)
+        # 16 384 is the sweet-spot for qwen2.5:3b — comfortably holds
+        # system prompt + RAG context + 3-4 conversation exchanges
+        # without triggering the silent-hang that happens at num_ctx overflow.
+        ctx = config.get("num_ctx", 16384)
 
         log.info(f"[LLM] Creating client for {model_name} with temp={temp}, ctx={ctx}")
         llm = model_manager.get_llm(model_name, temperature=temp, num_ctx=ctx)
-
-        history_text = self._get_history_text(state["session_id"])
 
         code_request = self.is_code_request(state["prompt"])
         execution_request = self.is_execution_request(state["prompt"])
@@ -1140,6 +1152,30 @@ Do not generate executable source code unless the user explicitly requests progr
         # INVOKE LLM
         # --------------------------------------------------
 
+        # Build proper conversation history as turn objects.
+        # Using the last 6 messages (= 3 user+assistant exchanges) keeps the
+        # context window safe on small 3B models (default num_ctx=8192).
+        # We intentionally exclude the current turn — it's added as the final
+        # HumanMessage below so the model sees it as the live request.
+        from langchain_core.messages import AIMessage as AIMsg
+
+        history_messages = []
+        try:
+            raw_history = db.get_session_history(state["session_id"], limit=10)
+            # drop the very last entry if it's the current prompt already saved
+            recent = raw_history[-6:] if len(raw_history) > 6 else raw_history
+            for msg in recent:
+                role = msg.get("role", "")
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "user":
+                    history_messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    history_messages.append(AIMsg(content=content))
+        except Exception as hist_err:
+            log.warning(f"[LLM] Could not load history: {hist_err}")
+
         if self.is_image_file(state["file_path"]):
             try:
                 image_data = self._encode_image(state["file_path"])
@@ -1149,18 +1185,29 @@ Do not generate executable source code unless the user explicitly requests progr
                         {"type": "image_url", "image_url": image_data},
                     ]
                 )
-                response = llm.invoke([SystemMessage(content=system_content), message])
+                # Vision model does not benefit from text history
+                response = llm.invoke(
+                    [SystemMessage(content=system_content), message],
+                    config={"timeout": 120},
+                )
             except Exception as error:
                 return {
                     "generated_code": f"Unable to process uploaded image: {error}",
                     "detected_language": "",
                 }
         else:
-            messages = [
-                SystemMessage(content=system_content),
-                HumanMessage(content=user_text),
-            ]
-            response = llm.invoke(messages)
+            messages = (
+                [SystemMessage(content=system_content)]
+                + history_messages
+                + [HumanMessage(content=user_text)]
+            )
+            try:
+                response = llm.invoke(messages, config={"timeout": 120})
+            except Exception as llm_err:
+                return {
+                    "generated_code": f"The model did not respond in time. Try a shorter prompt or start a new session. Error: {llm_err}",
+                    "detected_language": "",
+                }
 
         output = response.content.strip()
 

@@ -53,8 +53,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -304,9 +304,43 @@ def download_model(repo_id: str = Form(...), filename: str = Form(...), hf_token
 def download_progress(dl_id: str):
     return hf_manager.get_download_status(dl_id)
 
+@app.delete("/models/download/{dl_id}")
+def cancel_download(dl_id: str):
+    cancelled = hf_manager.cancel_download(dl_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Download not active or already finished")
+    return {"success": True, "download_id": dl_id, "status": "cancelled"}
+
 @app.get("/models/downloaded")
 def list_downloaded_models():
     return hf_manager.list_local_downloaded_files()
+
+@app.delete("/models/downloaded/{filename}")
+def delete_downloaded_model(filename: str):
+    try:
+        hf_manager.delete_downloaded_file(filename)
+        return {"success": True, "filename": filename}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+@app.delete("/models/ollama/{model_name:path}")
+def delete_ollama_model(model_name: str):
+    try:
+        result = subprocess.run(
+            [OLLAMA_COMMAND, "rm", model_name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    if result.returncode != 0:
+        raise HTTPException(status_code=502, detail=result.stderr or "Ollama model deletion failed")
+    return {"success": True, "model_id": model_name, "output": result.stdout}
 
 @app.post("/models/pull")
 def pull_model(model_name: str = Form(...)):
@@ -332,6 +366,13 @@ def load_downloaded_model(filename: str = Form(...)):
     file_path = os.path.abspath(os.path.join(downloaded_dir, safe_filename))
     if os.path.commonpath([downloaded_dir, file_path]) != downloaded_dir or not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="Downloaded model file not found")
+
+    ext = os.path.splitext(safe_filename)[1].lower()
+    if ext != ".gguf":
+        raise HTTPException(
+            status_code=400,
+            detail="Only GGUF format weights (.gguf) can be directly loaded into Ollama. Safetensors require conversion.",
+        )
 
     model_tag = os.path.splitext(safe_filename)[0].lower().replace("_", "-").replace(".", "-")
     modelfile_path = os.path.join(downloaded_dir, f"Modelfile.{model_tag}")
@@ -379,14 +420,135 @@ def gpu_status():
     except Exception as error:
         return {"available": False, "devices": [], "message": str(error)}
 
+
+# ------------------------------------------------------------------
+# PROJECTS
+# ------------------------------------------------------------------
+
+class ProjectCreate(BaseModel):
+    name: str
+    description: str = ""
+
+class ProjectUpdate(BaseModel):
+    name: str
+    description: str = ""
+
+class TaskCreate(BaseModel):
+    title: str
+    description: str = ""
+    status: str = "todo"
+
+class TaskUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+
+VALID_TASK_STATUSES = {"todo", "in_progress", "done"}
+
 @app.get("/projects")
 def list_projects(request: Request):
     return db.get_projects(user_id=request.state.user["username"])
 
 @app.post("/projects")
-def create_project(request: Request, name: str = Form(...), description: str = Form("")):
-    p_id = db.create_project(name, description, request.state.user["username"])
-    return {"project_id": p_id}
+def create_project(request: Request, body: ProjectCreate):
+    p_id = db.create_project(body.name, body.description, request.state.user["username"])
+    project = db.get_project(p_id, user_id=request.state.user["username"])
+    return project
+
+@app.get("/projects/{project_id}")
+def get_project(request: Request, project_id: int):
+    project = db.get_project_detail(project_id, user_id=request.state.user["username"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+@app.put("/projects/{project_id}")
+def update_project(request: Request, project_id: int, body: ProjectUpdate):
+    ok = db.rename_project(project_id, body.name, body.description,
+                           user_id=request.state.user["username"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return db.get_project(project_id, user_id=request.state.user["username"])
+
+@app.post("/projects/{project_id}/archive")
+def archive_project(request: Request, project_id: int):
+    ok = db.archive_project(project_id, user_id=request.state.user["username"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"success": True}
+
+@app.delete("/projects/{project_id}")
+def delete_project(request: Request, project_id: int):
+    ok = db.delete_project(project_id, user_id=request.state.user["username"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"success": True}
+
+# ------------------------------------------------------------------
+# PROJECT ↔ SESSION
+# ------------------------------------------------------------------
+
+@app.post("/projects/{project_id}/sessions/{session_id}")
+def attach_session(request: Request, project_id: int, session_id: str):
+    if not db.session_exists(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    ok = db.attach_session_to_project(project_id, session_id,
+                                       user_id=request.state.user["username"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
+    return {"success": True}
+
+@app.delete("/projects/{project_id}/sessions/{session_id}")
+def detach_session(request: Request, project_id: int, session_id: str):
+    ok = db.detach_session_from_project(project_id, session_id,
+                                         user_id=request.state.user["username"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
+    return {"success": True}
+
+# ------------------------------------------------------------------
+# TASKS
+# ------------------------------------------------------------------
+
+@app.get("/projects/{project_id}/tasks")
+def list_tasks(request: Request, project_id: int):
+    project = db.get_project(project_id, user_id=request.state.user["username"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return db.get_tasks(project_id)
+
+@app.post("/projects/{project_id}/tasks")
+def create_task(request: Request, project_id: int, body: TaskCreate):
+    project = db.get_project(project_id, user_id=request.state.user["username"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if body.status not in VALID_TASK_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {VALID_TASK_STATUSES}")
+    t_id = db.create_task(project_id, body.title, body.description, body.status)
+    return db.get_tasks(project_id)
+
+@app.patch("/projects/{project_id}/tasks/{task_id}")
+def update_task(request: Request, project_id: int, task_id: int, body: TaskUpdate):
+    project = db.get_project(project_id, user_id=request.state.user["username"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if body.status is not None and body.status not in VALID_TASK_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {VALID_TASK_STATUSES}")
+    ok = db.update_task(task_id, project_id, title=body.title,
+                        description=body.description, status=body.status)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return db.get_tasks(project_id)
+
+@app.delete("/projects/{project_id}/tasks/{task_id}")
+def delete_task(request: Request, project_id: int, task_id: int):
+    project = db.get_project(project_id, user_id=request.state.user["username"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    ok = db.delete_task(task_id, project_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"success": True}
 
 @app.get("/sentry/status")
 def sentry_status():

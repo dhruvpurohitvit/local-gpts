@@ -132,7 +132,7 @@ class DatabaseManager:
                 theme TEXT DEFAULT 'dark',
                 default_model TEXT DEFAULT 'auto',
                 default_temperature REAL DEFAULT 0.0,
-                default_num_ctx INTEGER DEFAULT 8192,
+                default_num_ctx INTEGER DEFAULT 16384,
                 default_system_prompt TEXT DEFAULT '',
                 default_landing_page TEXT DEFAULT 'chat',
                 session_retention_days INTEGER DEFAULT 30,
@@ -227,7 +227,7 @@ class DatabaseManager:
             ("theme", "TEXT DEFAULT 'dark'"),
             ("default_model", "TEXT DEFAULT 'auto'"),
             ("default_temperature", "REAL DEFAULT 0.0"),
-            ("default_num_ctx", "INTEGER DEFAULT 8192"),
+            ("default_num_ctx", "INTEGER DEFAULT 16384"),
             ("default_system_prompt", "TEXT DEFAULT ''"),
             ("default_landing_page", "TEXT DEFAULT 'chat'"),
             ("session_retention_days", "INTEGER DEFAULT 30"),
@@ -892,33 +892,276 @@ class DatabaseManager:
     # ==========================================================
     # PROJECTS & TASKS
     # ==========================================================
-    def create_project(self, name, description="", user_id=None):
+
+    def _ensure_project_tables(self, cursor):
+        """Create projects, project_sessions, and tasks tables if absent, and migrate columns."""
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                created_at  TIMESTAMP,
+                user_id     TEXT,
+                archived    INTEGER DEFAULT 0
+            )
+        """)
+        self.add_column_if_missing(cursor, "projects", "user_id",     "TEXT")
+        self.add_column_if_missing(cursor, "projects", "archived",    "INTEGER DEFAULT 0")
+        self.add_column_if_missing(cursor, "projects", "description", "TEXT DEFAULT ''")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS project_sessions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                session_id TEXT    NOT NULL,
+                attached_at TIMESTAMP,
+                UNIQUE(project_id, session_id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id  INTEGER NOT NULL,
+                title       TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                status      TEXT DEFAULT 'todo',
+                created_at  TIMESTAMP,
+                updated_at  TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+        """)
+        self.add_column_if_missing(cursor, "tasks", "description", "TEXT DEFAULT ''")
+        self.add_column_if_missing(cursor, "tasks", "updated_at",  "TIMESTAMP")
+
+    # ----------------------------------------------------------
+    # PROJECT CRUD
+    # ----------------------------------------------------------
+
+    def create_project(self, name: str, description: str = "", user_id=None) -> int:
         conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, description TEXT, created_at TIMESTAMP, user_id TEXT)")
-        self.add_column_if_missing(cursor, "projects", "user_id", "TEXT")
-        cursor.execute("INSERT INTO projects (name, description, created_at, user_id) VALUES (?, ?, ?, ?)", (name, description, datetime.now().isoformat(), user_id))
-        p_id = cursor.lastrowid
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        cur.execute(
+            "INSERT INTO projects (name, description, created_at, user_id, archived) VALUES (?, ?, ?, ?, 0)",
+            (name, description, datetime.now().isoformat(), user_id),
+        )
+        p_id = cur.lastrowid
         conn.commit()
         conn.close()
         return p_id
 
     def get_projects(self, user_id=None):
         conn = self.get_connection()
-        cursor = conn.cursor()
+        cur  = conn.cursor()
         try:
+            self._ensure_project_tables(cur)
             if user_id is None:
-                cursor.execute("SELECT * FROM projects ORDER BY id DESC")
+                cur.execute("SELECT * FROM projects WHERE archived = 0 ORDER BY id DESC")
             else:
-                cursor.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY id DESC", (user_id,))
-            rows = cursor.fetchall()
+                cur.execute("SELECT * FROM projects WHERE user_id = ? AND archived = 0 ORDER BY id DESC", (user_id,))
+            rows = cur.fetchall()
         except sqlite3.OperationalError:
             rows = []
         conn.close()
         return [dict(r) for r in rows]
 
+    def get_project(self, project_id: int, user_id=None):
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        cur.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        p = dict(row)
+        if user_id and p.get("user_id") != user_id:
+            return None
+        return p
+
+    def rename_project(self, project_id: int, name: str, description: str, user_id=None) -> bool:
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        query = "UPDATE projects SET name = ?, description = ? WHERE id = ?"
+        params: list = [name, description, project_id]
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        cur.execute(query, params)
+        updated = cur.rowcount > 0
+        conn.commit()
+        conn.close()
+        return updated
+
+    def archive_project(self, project_id: int, user_id=None) -> bool:
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        query  = "UPDATE projects SET archived = 1 WHERE id = ?"
+        params: list = [project_id]
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        cur.execute(query, params)
+        updated = cur.rowcount > 0
+        conn.commit()
+        conn.close()
+        return updated
+
+    def delete_project(self, project_id: int, user_id=None) -> bool:
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        # Verify ownership
+        cur.execute("SELECT user_id FROM projects WHERE id = ?", (project_id,))
+        row = cur.fetchone()
+        if not row or (user_id and row["user_id"] != user_id):
+            conn.close()
+            return False
+        cur.execute("DELETE FROM tasks           WHERE project_id  = ?", (project_id,))
+        cur.execute("DELETE FROM project_sessions WHERE project_id = ?", (project_id,))
+        cur.execute("DELETE FROM projects         WHERE id         = ?", (project_id,))
+        conn.commit()
+        conn.close()
+        return True
+
+    # ----------------------------------------------------------
+    # SESSION ↔ PROJECT LINK
+    # ----------------------------------------------------------
+
+    def attach_session_to_project(self, project_id: int, session_id: str, user_id=None) -> bool:
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        # Ownership check
+        cur.execute("SELECT user_id FROM projects WHERE id = ?", (project_id,))
+        row = cur.fetchone()
+        if not row or (user_id and row["user_id"] != user_id):
+            conn.close()
+            return False
+        try:
+            cur.execute(
+                "INSERT OR IGNORE INTO project_sessions (project_id, session_id, attached_at) VALUES (?, ?, ?)",
+                (project_id, session_id, datetime.now().isoformat()),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            conn.close()
+            return False
+        conn.close()
+        return True
+
+    def detach_session_from_project(self, project_id: int, session_id: str, user_id=None) -> bool:
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        cur.execute("SELECT user_id FROM projects WHERE id = ?", (project_id,))
+        row = cur.fetchone()
+        if not row or (user_id and row["user_id"] != user_id):
+            conn.close()
+            return False
+        cur.execute(
+            "DELETE FROM project_sessions WHERE project_id = ? AND session_id = ?",
+            (project_id, session_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    def get_project_sessions(self, project_id: int):
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        cur.execute("""
+            SELECT s.session_id, s.created_at,
+                   (SELECT content FROM messages
+                    WHERE messages.session_id = s.session_id AND role = 'user'
+                    ORDER BY id ASC LIMIT 1) AS first_message,
+                   ps.attached_at
+            FROM project_sessions ps
+            JOIN sessions s ON s.session_id = ps.session_id
+            WHERE ps.project_id = ?
+            ORDER BY ps.attached_at DESC
+        """, (project_id,))
+        rows = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_project_detail(self, project_id: int, user_id=None):
+        project = self.get_project(project_id, user_id=user_id)
+        if not project:
+            return None
+        project["sessions"] = self.get_project_sessions(project_id)
+        project["tasks"]    = self.get_tasks(project_id)
+        return project
+
+    # ----------------------------------------------------------
+    # TASKS CRUD
+    # ----------------------------------------------------------
+
+    def create_task(self, project_id: int, title: str, description: str = "", status: str = "todo") -> int:
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        now = datetime.now().isoformat()
+        cur.execute(
+            "INSERT INTO tasks (project_id, title, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (project_id, title, description, status, now, now),
+        )
+        t_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return t_id
+
+    def get_tasks(self, project_id: int):
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        cur.execute(
+            "SELECT * FROM tasks WHERE project_id = ? ORDER BY id ASC",
+            (project_id,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def update_task(self, task_id: int, project_id: int, title: str = None,
+                    description: str = None, status: str = None) -> bool:
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        sets, params = [], []
+        if title       is not None: sets.append("title = ?");       params.append(title)
+        if description is not None: sets.append("description = ?"); params.append(description)
+        if status      is not None: sets.append("status = ?");      params.append(status)
+        if not sets:
+            conn.close()
+            return False
+        sets.append("updated_at = ?")
+        params.append(datetime.now().isoformat())
+        params += [task_id, project_id]
+        cur.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ? AND project_id = ?", params)
+        updated = cur.rowcount > 0
+        conn.commit()
+        conn.close()
+        return updated
+
+    def delete_task(self, task_id: int, project_id: int) -> bool:
+        conn = self.get_connection()
+        cur  = conn.cursor()
+        self._ensure_project_tables(cur)
+        cur.execute("DELETE FROM tasks WHERE id = ? AND project_id = ?", (task_id, project_id))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+
+
 # ==========================================================
 # GLOBAL DATABASE INSTANCE
 # ==========================================================
 
-db = DatabaseManager()
+db = DatabaseManager()

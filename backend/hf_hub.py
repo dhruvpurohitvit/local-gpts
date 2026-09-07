@@ -19,8 +19,8 @@ class HFHubManager:
     def search_models(self, query: str, limit: int = 30, token: str = None):
         try:
             results = list(self.api.list_models(
-                search=query, 
-                limit=limit, 
+                search=query,
+                limit=limit,
                 sort="downloads",
                 token=token
             ))
@@ -32,6 +32,8 @@ class HFHubManager:
                     "likes": getattr(m, "likes", 0),
                     "tags": getattr(m, "tags", []),
                     "pipeline_tag": getattr(m, "pipeline_tag", ""),
+                    "last_modified": str(getattr(m, "last_modified", "")),
+                    "author": getattr(m, "author", ""),
                 })
             return models
         except Exception as e:
@@ -48,7 +50,7 @@ class HFHubManager:
             return []
 
     def download_file_background(self, repo_id: str, filename: str, download_id: str, token: str = None):
-        dest_path = os.path.join(MODELS_DIR, filename)
+        dest_path = os.path.join(MODELS_DIR, os.path.basename(filename))
         url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
         headers = {}
         if token:
@@ -62,9 +64,10 @@ class HFHubManager:
             "downloaded_mb": "0.0 MB",
             "total_mb": "Unknown",
             "speed_mbps": "0.0",
-            "file": filename,
+            "file": os.path.basename(filename),
             "repo": repo_id,
-            "path": dest_path
+            "path": dest_path,
+            "_cancel": False,
         }
 
         try:
@@ -83,6 +86,11 @@ class HFHubManager:
                 chunk_size = 1024 * 512  # 512 KB chunks for smooth tracking
                 with open(dest_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=chunk_size):
+                        # Check cancel flag on every chunk
+                        if self.downloads[download_id].get("_cancel"):
+                            log.info(f"Download cancelled: {download_id}")
+                            self.downloads[download_id]["status"] = "cancelled"
+                            break
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
@@ -91,6 +99,14 @@ class HFHubManager:
                             if total_bytes > 0:
                                 pct = int((downloaded / total_bytes) * 100)
                                 self.downloads[download_id]["progress"] = min(pct, 99)
+
+                if self.downloads[download_id]["status"] == "cancelled":
+                    # Remove partial file
+                    try:
+                        os.remove(dest_path)
+                    except OSError:
+                        pass
+                    return
 
             self.downloads[download_id]["status"] = "completed"
             self.downloads[download_id]["progress"] = 100
@@ -101,20 +117,37 @@ class HFHubManager:
             log.error(f"Download failed for {download_id}: {e}")
             self.downloads[download_id]["status"] = "error"
             self.downloads[download_id]["error"] = str(e)
+            # Remove partial file on error
+            try:
+                if os.path.exists(dest_path):
+                    os.remove(dest_path)
+            except OSError:
+                pass
 
     def start_download(self, repo_id: str, filename: str, token: str = None) -> str:
-        download_id = f"{repo_id.replace('/', '_')}_{filename}"
-        # If already completed or currently running, return id
+        download_id = f"{repo_id.replace('/', '_')}_{os.path.basename(filename)}"
+        # If already running, return existing id
         if download_id in self.downloads and self.downloads[download_id]["status"] == "downloading":
             return download_id
-        
-        thread = threading.Thread(target=self.download_file_background, args=(repo_id, filename, download_id, token))
-        thread.daemon = True
+
+        thread = threading.Thread(
+            target=self.download_file_background,
+            args=(repo_id, filename, download_id, token),
+            daemon=True,
+        )
         thread.start()
         return download_id
 
+    def cancel_download(self, download_id: str) -> bool:
+        if download_id in self.downloads and self.downloads[download_id]["status"] == "downloading":
+            self.downloads[download_id]["_cancel"] = True
+            return True
+        return False
+
     def get_download_status(self, download_id: str):
-        return self.downloads.get(download_id, {"status": "not_found"})
+        entry = self.downloads.get(download_id, {"status": "not_found"})
+        # Don't expose internal cancel flag
+        return {k: v for k, v in entry.items() if not k.startswith("_")}
 
     def list_local_downloaded_files(self):
         """List all downloaded model files on disk with size"""
@@ -122,15 +155,33 @@ class HFHubManager:
         if os.path.exists(MODELS_DIR):
             for fname in os.listdir(MODELS_DIR):
                 fpath = os.path.join(MODELS_DIR, fname)
-                if os.path.isfile(fpath) and not fname.startswith('.'):
-                    size_mb = os.path.getsize(fpath) / (1024*1024)
-                    size_str = f"{size_mb:.1f} MB" if size_mb < 1024 else f"{size_mb/1024:.2f} GB"
+                if os.path.isfile(fpath) and not fname.startswith('.') and (
+                    fname.endswith('.gguf') or fname.endswith('.safetensors')
+                ):
+                    size_bytes = os.path.getsize(fpath)
+                    size_mb = size_bytes / (1024 * 1024)
+                    size_str = f"{size_mb:.1f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
                     files.append({
                         "filename": fname,
                         "path": fpath,
                         "size": size_str,
-                        "type": "GGUF" if fname.endswith('.gguf') else "Safetensors"
+                        "size_bytes": size_bytes,
+                        "type": "GGUF" if fname.endswith('.gguf') else "Safetensors",
                     })
         return files
+
+    def delete_downloaded_file(self, filename: str) -> bool:
+        safe = os.path.basename(filename)
+        fpath = os.path.join(MODELS_DIR, safe)
+        abs_models = os.path.abspath(MODELS_DIR)
+        abs_target = os.path.abspath(fpath)
+        if not abs_target.startswith(abs_models):
+            raise ValueError("Path traversal detected")
+        if not os.path.isfile(abs_target):
+            raise FileNotFoundError(f"{safe} not found")
+        os.remove(abs_target)
+        log.info(f"Deleted downloaded file: {abs_target}")
+        return True
+
 
 hf_manager = HFHubManager()
