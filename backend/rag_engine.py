@@ -339,10 +339,28 @@ class LocalRAGEngine:
 
 
 # --------------------------------------------------
-# GLOBAL LOCAL RAG ENGINE
+# LAZY LOCAL RAG ENGINE
 # --------------------------------------------------
 
-rag_engine = LocalRAGEngine()
+rag_engine = None
+rag_engine_error = None
+
+
+def get_rag_engine():
+    global rag_engine, rag_engine_error
+
+    if rag_engine is not None:
+        return rag_engine
+
+    if rag_engine_error is not None:
+        raise rag_engine_error
+
+    try:
+        rag_engine = LocalRAGEngine()
+        return rag_engine
+    except Exception as error:
+        rag_engine_error = error
+        raise
 
 
 # --------------------------------------------------
@@ -356,7 +374,7 @@ def ingest_document(
     Ingest a document into the local ChromaDB.
     """
 
-    return rag_engine.ingest_document(
+    return get_rag_engine().ingest_document(
         file_path
     )
 
@@ -369,7 +387,12 @@ def query_rag(
     Query the local RAG database.
     """
 
-    return rag_engine.query_rag(
+    try:
+        engine = get_rag_engine()
+    except FileNotFoundError:
+        return ""
+
+    return engine.query_rag(
         query_text,
         top_k
     )

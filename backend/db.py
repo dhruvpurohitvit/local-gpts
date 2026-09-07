@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 
 PROJECT_ROOT = os.path.abspath(
@@ -118,7 +118,34 @@ class DatabaseManager:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
+                created_at TIMESTAMP,
+                user_id TEXT
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                name TEXT,
+                email TEXT,
+                password_hash TEXT,
+                theme TEXT DEFAULT 'dark',
+                default_model TEXT DEFAULT 'auto',
+                default_temperature REAL DEFAULT 0.0,
+                default_num_ctx INTEGER DEFAULT 8192,
+                default_system_prompt TEXT DEFAULT '',
+                default_landing_page TEXT DEFAULT 'chat',
+                session_retention_days INTEGER DEFAULT 30,
                 created_at TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token_hash TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP NOT NULL
             )
         """)
 
@@ -189,6 +216,23 @@ class DatabaseManager:
             "created_at",
             "TIMESTAMP"
         )
+        self.add_column_if_missing(
+            cursor,
+            "sessions",
+            "user_id",
+            "TEXT"
+        )
+        for column_name, definition in (
+            ("password_hash", "TEXT"),
+            ("theme", "TEXT DEFAULT 'dark'"),
+            ("default_model", "TEXT DEFAULT 'auto'"),
+            ("default_temperature", "REAL DEFAULT 0.0"),
+            ("default_num_ctx", "INTEGER DEFAULT 8192"),
+            ("default_system_prompt", "TEXT DEFAULT ''"),
+            ("default_landing_page", "TEXT DEFAULT 'chat'"),
+            ("session_retention_days", "INTEGER DEFAULT 30"),
+        ):
+            self.add_column_if_missing(cursor, "users", column_name, definition)
 
 
         # Messages
@@ -321,14 +365,15 @@ class DatabaseManager:
     # SESSION MANAGEMENT
     # ==========================================================
 
-    def create_session(self):
+    def create_session(self, user_id=None):
 
         session_id = str(
             uuid.uuid4()
         )
 
         self.create_session_with_id(
-            session_id
+            session_id,
+            user_id
         )
 
         return session_id
@@ -336,7 +381,8 @@ class DatabaseManager:
 
     def create_session_with_id(
         self,
-        session_id
+        session_id,
+        user_id=None
     ):
 
         connection = self.get_connection()
@@ -358,12 +404,14 @@ class DatabaseManager:
             cursor.execute("""
                 INSERT INTO sessions (
                     session_id,
-                    created_at
+                    created_at,
+                    user_id
                 )
-                VALUES (?, ?)
+                VALUES (?, ?, ?)
             """, (
                 session_id,
-                datetime.now().isoformat()
+                datetime.now().isoformat(),
+                user_id
             ))
 
             connection.commit()
@@ -371,6 +419,122 @@ class DatabaseManager:
         connection.close()
 
         return session_id
+
+    def session_belongs_to_user(self, session_id, user_id):
+        connection = self.get_connection()
+        cursor = connection.cursor()
+        cursor.execute("SELECT user_id FROM sessions WHERE session_id = ?", (session_id,))
+        row = cursor.fetchone()
+        connection.close()
+        return row is not None and row["user_id"] == user_id
+
+    def ensure_user(self, username, name, email, password_hash=None):
+        connection = self.get_connection()
+        connection.execute(
+            """INSERT OR IGNORE INTO users
+            (username, name, email, password_hash, created_at)
+            VALUES (?, ?, ?, ?, ?)""",
+            (username, name, email, password_hash, datetime.now().isoformat()),
+        )
+        if password_hash:
+            connection.execute(
+                "UPDATE users SET name = ?, email = ?, password_hash = COALESCE(password_hash, ?) WHERE username = ?",
+                (name, email, password_hash, username),
+            )
+        connection.commit()
+        connection.close()
+
+    def user_exists(self, username):
+        connection = self.get_connection()
+        row = connection.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone()
+        connection.close()
+        return row is not None
+
+    def create_user(self, username, name, email, password_hash):
+        connection = self.get_connection()
+        connection.execute(
+            "INSERT INTO users (username, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+            (username, name, email, password_hash, datetime.now().isoformat()),
+        )
+        connection.commit()
+        connection.close()
+
+    def get_user(self, username):
+        connection = self.get_connection()
+        row = connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        connection.close()
+        return dict(row) if row else None
+
+    def update_user_settings(self, username, values):
+        allowed = {
+            "name", "theme", "default_model", "default_temperature",
+            "default_num_ctx", "default_system_prompt", "default_landing_page",
+            "session_retention_days",
+        }
+        updates = [(key, value) for key, value in values.items() if key in allowed]
+        if not updates:
+            return self.get_user(username)
+        assignments = ", ".join(f"{key} = ?" for key, _ in updates)
+        connection = self.get_connection()
+        connection.execute(f"UPDATE users SET {assignments} WHERE username = ?", [value for _, value in updates] + [username])
+        connection.commit()
+        connection.close()
+        return self.get_user(username)
+
+    def update_user_password(self, username, password_hash):
+        connection = self.get_connection()
+        connection.execute("UPDATE users SET password_hash = ? WHERE username = ?", (password_hash, username))
+        connection.commit()
+        connection.close()
+
+    def cleanup_expired_sessions(self, username, retention_days):
+        cutoff = datetime.now() - timedelta(days=int(retention_days))
+        connection = self.get_connection()
+        rows = connection.execute(
+            "SELECT session_id FROM sessions WHERE user_id = ? AND created_at < ?",
+            (username, cutoff.isoformat()),
+        ).fetchall()
+        session_ids = [row["session_id"] for row in rows]
+        for session_id in session_ids:
+            connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            connection.execute("DELETE FROM artifacts WHERE session_id = ?", (session_id,))
+            connection.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        connection.commit()
+        connection.close()
+        return session_ids
+
+    def create_auth_session(self, token_hash, username, expires_at):
+        connection = self.get_connection()
+        connection.execute(
+            "INSERT INTO auth_sessions (token_hash, username, expires_at, created_at) VALUES (?, ?, ?, ?)",
+            (token_hash, username, expires_at, datetime.now().isoformat()),
+        )
+        connection.commit()
+        connection.close()
+
+    def get_auth_session(self, token_hash):
+        connection = self.get_connection()
+        row = connection.execute(
+            "SELECT username, expires_at FROM auth_sessions WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+        connection.close()
+        if not row:
+            return None
+        try:
+            if datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+                self.delete_auth_session(token_hash)
+                return None
+        except ValueError:
+            self.delete_auth_session(token_hash)
+            return None
+        return dict(row)
+
+    def delete_auth_session(self, token_hash):
+        connection = self.get_connection()
+        connection.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
+        connection.commit()
+        connection.close()
 
 
     def session_exists(
@@ -399,14 +563,15 @@ class DatabaseManager:
 
     def get_all_sessions(
         self,
-        limit=100
+        limit=100,
+        user_id=None
     ):
 
         connection = self.get_connection()
 
         cursor = connection.cursor()
 
-        cursor.execute("""
+        query = """
             SELECT
                 s.session_id,
                 s.created_at,
@@ -424,15 +589,16 @@ class DatabaseManager:
                     WHERE messages.session_id = s.session_id
                 ) AS last_activity
             FROM sessions s
+            {user_filter}
             ORDER BY
                 COALESCE(
                     last_activity,
                     s.created_at
                 ) DESC
             LIMIT ?
-        """, (
-            limit,
-        ))
+        """.format(user_filter="WHERE s.user_id = ?" if user_id is not None else "")
+        params = [user_id, limit] if user_id is not None else [limit]
+        cursor.execute(query, params)
 
         rows = cursor.fetchall()
 
@@ -726,21 +892,25 @@ class DatabaseManager:
     # ==========================================================
     # PROJECTS & TASKS
     # ==========================================================
-    def create_project(self, name, description=""):
+    def create_project(self, name, description="", user_id=None):
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, description TEXT, created_at TIMESTAMP)")
-        cursor.execute("INSERT INTO projects (name, description, created_at) VALUES (?, ?, ?)", (name, description, datetime.now().isoformat()))
+        cursor.execute("CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT, description TEXT, created_at TIMESTAMP, user_id TEXT)")
+        self.add_column_if_missing(cursor, "projects", "user_id", "TEXT")
+        cursor.execute("INSERT INTO projects (name, description, created_at, user_id) VALUES (?, ?, ?, ?)", (name, description, datetime.now().isoformat(), user_id))
         p_id = cursor.lastrowid
         conn.commit()
         conn.close()
         return p_id
 
-    def get_projects(self):
+    def get_projects(self, user_id=None):
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT * FROM projects ORDER BY id DESC")
+            if user_id is None:
+                cursor.execute("SELECT * FROM projects ORDER BY id DESC")
+            else:
+                cursor.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY id DESC", (user_id,))
             rows = cursor.fetchall()
         except sqlite3.OperationalError:
             rows = []
