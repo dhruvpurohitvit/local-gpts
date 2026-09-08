@@ -136,6 +136,7 @@ class DatabaseManager:
                 default_system_prompt TEXT DEFAULT '',
                 default_landing_page TEXT DEFAULT 'chat',
                 session_retention_days INTEGER DEFAULT 30,
+                role TEXT DEFAULT 'analyst',
                 created_at TIMESTAMP
             )
         """)
@@ -231,8 +232,11 @@ class DatabaseManager:
             ("default_system_prompt", "TEXT DEFAULT ''"),
             ("default_landing_page", "TEXT DEFAULT 'chat'"),
             ("session_retention_days", "INTEGER DEFAULT 30"),
+            ("role", "TEXT DEFAULT 'analyst'"),
         ):
             self.add_column_if_missing(cursor, "users", column_name, definition)
+
+        cursor.execute("UPDATE users SET role = 'admin' WHERE username = 'admin'")
 
 
         # Messages
@@ -430,12 +434,15 @@ class DatabaseManager:
 
     def ensure_user(self, username, name, email, password_hash=None):
         connection = self.get_connection()
+        initial_role = "admin" if username == "admin" else "analyst"
         connection.execute(
             """INSERT OR IGNORE INTO users
-            (username, name, email, password_hash, created_at)
-            VALUES (?, ?, ?, ?, ?)""",
-            (username, name, email, password_hash, datetime.now().isoformat()),
+            (username, name, email, password_hash, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (username, name, email, password_hash, initial_role, datetime.now().isoformat()),
         )
+        if username == "admin":
+            connection.execute("UPDATE users SET role = 'admin' WHERE username = 'admin'")
         if password_hash:
             connection.execute(
                 "UPDATE users SET name = ?, email = ?, password_hash = COALESCE(password_hash, ?) WHERE username = ?",
@@ -450,11 +457,12 @@ class DatabaseManager:
         connection.close()
         return row is not None
 
-    def create_user(self, username, name, email, password_hash):
+    def create_user(self, username, name, email, password_hash, role="analyst"):
         connection = self.get_connection()
+        role = "admin" if username == "admin" else (role or "analyst")
         connection.execute(
-            "INSERT INTO users (username, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-            (username, name, email, password_hash, datetime.now().isoformat()),
+            "INSERT INTO users (username, name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (username, name, email, password_hash, role, datetime.now().isoformat()),
         )
         connection.commit()
         connection.close()
@@ -464,6 +472,21 @@ class DatabaseManager:
         row = connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         connection.close()
         return dict(row) if row else None
+
+    def get_all_users(self):
+        connection = self.get_connection()
+        rows = connection.execute("SELECT username, name, email, role, created_at FROM users ORDER BY created_at ASC").fetchall()
+        connection.close()
+        return [dict(r) for r in rows]
+
+    def update_user_role(self, username, role):
+        if role not in ("admin", "analyst", "auditor"):
+            raise ValueError(f"Invalid role: {role}")
+        connection = self.get_connection()
+        connection.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
+        connection.commit()
+        connection.close()
+        return self.get_user(username)
 
     def update_user_settings(self, username, values):
         allowed = {

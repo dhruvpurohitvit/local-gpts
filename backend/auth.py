@@ -37,6 +37,8 @@ def authenticate(username: str, password: str):
         "email": (stored_user or {}).get("email") or (record or {}).get("email", ""),
     }
     db.ensure_user(username, user["name"], user["email"], (record or {}).get("password"))
+    fresh_user = db.get_user(username) or {}
+    user["role"] = fresh_user.get("role") or ("admin" if username == "admin" else "analyst")
     retention_days = (db.get_user(username) or {}).get("session_retention_days") or 30
     expired_sessions = db.cleanup_expired_sessions(username, retention_days)
     workspace_root = Path(__file__).resolve().parent.parent / "workspace"
@@ -74,6 +76,7 @@ def current_user(sovereign_session: str | None = Cookie(default=None)):
         "username": session["username"],
         "name": (stored_user or {}).get("name") or record.get("name", session["username"]),
         "email": (stored_user or {}).get("email") or record.get("email", ""),
+        "role": (stored_user or {}).get("role") or ("admin" if session["username"] == "admin" else "analyst"),
     }
 
 
@@ -85,6 +88,7 @@ def user_settings(username: str):
         "username": user["username"],
         "name": user["name"],
         "email": user["email"],
+        "role": user.get("role") or ("admin" if user["username"] == "admin" else "analyst"),
         "theme": user.get("theme") or "dark",
         "default_model": user.get("default_model") or "auto",
         "default_temperature": user.get("default_temperature") if user.get("default_temperature") is not None else 0.0,
@@ -105,10 +109,11 @@ def hash_password(password: str):
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-def register_user(username: str, name: str, email: str, password: str):
+def register_user(username: str, name: str, email: str, password: str, role: str = "analyst"):
     username = username.strip().lower()
     name = name.strip()
     email = email.strip().lower()
+    role = "admin" if username == "admin" else (role if role in ("admin", "analyst", "auditor") else "analyst")
     if len(username) < 3 or not username.replace("_", "").isalnum():
         raise ValueError("Username must be at least 3 characters and use letters, numbers, or underscores")
     if not name:
@@ -119,5 +124,5 @@ def register_user(username: str, name: str, email: str, password: str):
         raise ValueError("Password must be at least 8 characters")
     if db.user_exists(username) or username in _credentials():
         raise ValueError("Username is already registered")
-    db.create_user(username, name, email, hash_password(password))
-    return {"username": username, "name": name, "email": email}
+    db.create_user(username, name, email, hash_password(password), role=role)
+    return {"username": username, "name": name, "email": email, "role": role}

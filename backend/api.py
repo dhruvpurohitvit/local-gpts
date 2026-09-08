@@ -3,7 +3,8 @@ import shutil
 import subprocess
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+import json
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -13,6 +14,7 @@ from backend.db import db
 from backend.network_sentry import check_airgap_status
 from backend.hf_hub import hf_manager
 from backend.model_manager import model_manager
+from backend.airgap_ledger import airgap_ledger
 from backend.logger import log
 from backend.auth import (
     SESSION_COOKIE,
@@ -206,7 +208,35 @@ def create_new_session(request: Request):
     session_id = db.create_session(user_id=request.state.user["username"])
     ws = os.path.join(WORKSPACE_DIR, f"session_{session_id}")
     os.makedirs(ws, exist_ok=True)
+    airgap_ledger.record_event(
+        session_id=session_id,
+        event_type="SESSION_INITIALIZED",
+        payload={"workspace": ws},
+        username=request.state.user["username"]
+    )
     return {"success": True, "session_id": session_id, "workspace": ws}
+
+@app.get("/sessions/{session_id}/airgap-certificate")
+def get_airgap_certificate(request: Request, session_id: str):
+    username = request.state.user["username"]
+    if not db.session_belongs_to_user(session_id, username):
+        raise HTTPException(status_code=403, detail="Session does not belong to the current user")
+    return airgap_ledger.generate_certificate(session_id)
+
+@app.get("/sessions/{session_id}/airgap-certificate/download")
+def download_airgap_certificate(request: Request, session_id: str):
+    username = request.state.user["username"]
+    if not db.session_belongs_to_user(session_id, username):
+        raise HTTPException(status_code=403, detail="Session does not belong to the current user")
+    cert = airgap_ledger.generate_certificate(session_id)
+    cert_json = json.dumps(cert, indent=2)
+    return Response(
+        content=cert_json,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="AirGap_Certificate_{session_id[:8]}.json"'
+        }
+    )
 
 @app.post("/chat")
 def chat_endpoint(
@@ -232,6 +262,13 @@ def chat_endpoint(
         session_workspace = os.path.abspath(os.path.join(WORKSPACE_DIR, f"session_{session_id}"))
         os.makedirs(session_workspace, exist_ok=True)
 
+        airgap_ledger.record_event(
+            session_id=session_id,
+            event_type="PROMPT_RECEIVED",
+            payload={"prompt_length": len(prompt), "model_id": model_id, "temperature": temperature},
+            username=username
+        )
+
         file_path = None
         uploaded_file_name = None
         if file and file.filename:
@@ -247,6 +284,12 @@ def chat_endpoint(
                     from backend.rag_engine import ingest_document
                     chunks = ingest_document(file_path, session_id=session_id)
                     log.info(f"Ingested {uploaded_file_name} into RAG ({chunks} chunks) for session {session_id}.")
+                    airgap_ledger.record_event(
+                        session_id=session_id,
+                        event_type="DOCUMENT_INGESTED",
+                        payload={"file": uploaded_file_name, "chunks": chunks, "format": ext},
+                        username=username
+                    )
                 except Exception as e:
                     log.error(f"Failed to ingest {uploaded_file_name} into RAG: {e}")
 
@@ -263,6 +306,18 @@ def chat_endpoint(
         )
 
         artifacts = db.get_session_artifacts(session_id)
+
+        airgap_ledger.record_event(
+            session_id=session_id,
+            event_type="INFERENCE_COMPLETED",
+            payload={
+                "selected_model": result.get("selected_model"),
+                "output_length": len(result.get("final_output") or ""),
+                "artifact_count": len(artifacts),
+            },
+            username=username
+        )
+
         return {
             "success": True,
             "session_id": session_id,
@@ -294,8 +349,33 @@ def model_files(repo_id: str, hf_token: Optional[str] = None):
     clean_token = hf_token.strip() if hf_token and hf_token.strip() else None
     return hf_manager.get_model_files(repo_id, token=clean_token)
 
+@app.get("/users")
+def get_users_list(request: Request):
+    user = request.state.user
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only administrators can view user directories")
+    return {"users": db.get_all_users()}
+
+class RoleUpdateRequest(BaseModel):
+    role: str
+
+@app.patch("/users/{target_username}/role")
+def update_user_role(request: Request, target_username: str, body: RoleUpdateRequest):
+    user = request.state.user
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only administrators can change user roles")
+    if target_username == "admin" and body.role != "admin":
+        raise HTTPException(status_code=400, detail="Cannot downgrade primary admin user")
+    try:
+        updated = db.update_user_role(target_username, body.role)
+        return {"success": True, "user": updated}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.post("/models/download")
-def download_model(repo_id: str = Form(...), filename: str = Form(...), hf_token: Optional[str] = Form(None)):
+def download_model(request: Request, repo_id: str = Form(...), filename: str = Form(...), hf_token: Optional[str] = Form(None)):
+    if request.state.user.get("role") == "auditor":
+        raise HTTPException(status_code=403, detail="Auditors have read-only compliance access")
     clean_token = hf_token.strip() if hf_token and hf_token.strip() else None
     dl_id = hf_manager.start_download(repo_id, filename, token=clean_token)
     return {"download_id": dl_id}
@@ -316,7 +396,9 @@ def list_downloaded_models():
     return hf_manager.list_local_downloaded_files()
 
 @app.delete("/models/downloaded/{filename}")
-def delete_downloaded_model(filename: str):
+def delete_downloaded_model(request: Request, filename: str):
+    if request.state.user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only administrators can delete downloaded model weights")
     try:
         hf_manager.delete_downloaded_file(filename)
         return {"success": True, "filename": filename}
@@ -326,7 +408,9 @@ def delete_downloaded_model(filename: str):
         raise HTTPException(status_code=500, detail=str(error))
 
 @app.delete("/models/ollama/{model_name:path}")
-def delete_ollama_model(model_name: str):
+def delete_ollama_model(request: Request, model_name: str):
+    if request.state.user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only administrators can delete inference engines")
     try:
         result = subprocess.run(
             [OLLAMA_COMMAND, "rm", model_name],
@@ -343,7 +427,9 @@ def delete_ollama_model(model_name: str):
     return {"success": True, "model_id": model_name, "output": result.stdout}
 
 @app.post("/models/pull")
-def pull_model(model_name: str = Form(...)):
+def pull_model(request: Request, model_name: str = Form(...)):
+    if request.state.user.get("role") == "auditor":
+        raise HTTPException(status_code=403, detail="Auditors have read-only compliance access")
     try:
         result = subprocess.run(
             [OLLAMA_COMMAND, "pull", model_name],

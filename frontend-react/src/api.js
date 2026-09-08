@@ -83,6 +83,8 @@ export const api = {
   userSettings: () => request("/users/me/settings"),
   updateUserSettings: (values) => request("/users/me/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) }),
   changePassword: (currentPassword, newPassword) => request("/users/me/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
+  users: () => request("/users"),
+  updateUserRole: (username, role) => request(`/users/${encodeURIComponent(username)}/role`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) }),
 
   // Session management
   sessions: () => request("/sessions"),
@@ -93,6 +95,12 @@ export const api = {
   artifacts: (sessionId) => request(`/artifacts/${encodeURIComponent(sessionId)}`),
   downloadUrl: (sessionId, filename) =>
     `${API_BASE_URL}/download/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}`,
+
+  // Proof of Air-Gap Audit Ledger
+  airgapCertificate: (sessionId) =>
+    request(`/sessions/${encodeURIComponent(sessionId)}/airgap-certificate`),
+  downloadAirgapCertificateUrl: (sessionId) =>
+    `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/airgap-certificate/download`,
 
   // Chat
   chat: ({ prompt, sessionId, modelId, temperature, numCtx, systemPrompt, file, signal }) =>

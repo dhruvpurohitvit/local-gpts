@@ -268,6 +268,176 @@ function SentryBadge() {
 }
 
 // ---------------------------------------------------------------------------
+// AirgapCertificateModal & AirgapLedgerBadge
+// ---------------------------------------------------------------------------
+
+function AirgapCertificateModal({ sessionId, onClose }) {
+  const [cert, setCert] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!sessionId) return;
+    api
+      .airgapCertificate(sessionId)
+      .then(setCert)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [sessionId]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="cert-header">
+          <div>
+            <p className="eyebrow">TAMPER-EVIDENT CRYPTOGRAPHIC AUDIT</p>
+            <h1 style={{ fontSize: 24, marginTop: 4 }}>Proof of Air-Gap Compliance Certificate</h1>
+            <small style={{ color: "var(--muted)" }}>
+              Session ID: <code>{sessionId}</code>
+            </small>
+          </div>
+          <button className="text-button" style={{ fontSize: 20 }} onClick={onClose}>
+            ×
+          </button>
+        </div>
+
+        {loading && <div className="loader">Verifying Merkle hash chain…</div>}
+        {error && <div className="notice error">{error}</div>}
+
+        {cert && (
+          <div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+              <span
+                className={`badge-status ${
+                  cert.compliance_status === "VERIFIED_COMPLIANT"
+                    ? "badge-completed"
+                    : "badge-error"
+                }`}
+                style={{ fontSize: 13, padding: "6px 14px" }}
+              >
+                ● {cert.compliance_status === "VERIFIED_COMPLIANT" ? "VERIFIED AIR-GAPPED (ZERO LEAKS)" : cert.compliance_status}
+              </span>
+              <span className="tag-chip accent">Tamper Check: {cert.tamper_check_passed ? "PASSED" : "FAILED"}</span>
+            </div>
+
+            <div className="cert-grid">
+              <div className="cert-metric">
+                <small>Certificate ID</small>
+                <code>{cert.certificate_id}</code>
+              </div>
+              <div className="cert-metric">
+                <small>Audit Blocks Verified</small>
+                <strong>{cert.total_events_verified} Chained Events</strong>
+              </div>
+              <div className="cert-metric">
+                <small>External Sockets Leaked</small>
+                <strong style={{ color: cert.external_socket_leaks_detected === 0 ? "var(--accent)" : "var(--orange)" }}>
+                  {cert.external_socket_leaks_detected} sockets
+                </strong>
+              </div>
+              <div className="cert-metric">
+                <small>Timestamp Generated</small>
+                <span style={{ fontSize: 12 }}>{new Date(cert.generated_at).toLocaleString()}</span>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <small style={{ color: "var(--muted)", textTransform: "uppercase", fontSize: 11 }}>
+                Merkle Root Hash (SHA-256)
+              </small>
+              <div className="cert-hash-box">{cert.merkle_root_hash}</div>
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <small style={{ color: "var(--muted)", textTransform: "uppercase", fontSize: 11 }}>
+                Local Authority Digital Signature (HMAC-SHA256)
+              </small>
+              <div className="cert-hash-box">{cert.digital_signature_hmac}</div>
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <div className="section-heading" style={{ marginBottom: 8 }}>
+                <h2>Chained Event Ledger</h2>
+                <span>{cert.audit_trail?.length || 0} blocks</span>
+              </div>
+              <div className="audit-list">
+                {(cert.audit_trail || []).map((b) => (
+                  <div className="audit-item" key={b.index}>
+                    <div>
+                      <strong>#{b.index} [{b.event_type}]</strong>
+                      <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                        Hash: <code>{b.block_hash.slice(0, 16)}…</code> · Sockets: {b.network_snapshot?.external_socket_count || 0}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                      {new Date(b.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <a
+                className="primary"
+                href={api.downloadAirgapCertificateUrl(sessionId)}
+                download={`AirGap_Certificate_${sessionId.slice(0, 8)}.json`}
+                style={{ textDecoration: "none", display: "inline-block", fontSize: 13, padding: "8px 16px" }}
+              >
+                Download Signed Certificate (.json) ↓
+              </a>
+              <button className="secondary" onClick={onClose}>
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AirgapLedgerBadge({ sessionId, refreshTrigger }) {
+  const [certSummary, setCertSummary] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    api
+      .airgapCertificate(sessionId)
+      .then(setCertSummary)
+      .catch(() => setCertSummary(null));
+  }, [sessionId, refreshTrigger]);
+
+  return (
+    <>
+      <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>CRYPTOGRAPHIC AUDIT</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+          <span style={{ fontSize: 12, color: certSummary?.airgap_preserved ? "var(--accent)" : "var(--orange)" }}>
+            ● {certSummary ? `${certSummary.total_events_verified} Chained Events` : "Tracking Active"}
+          </span>
+          <button
+            className="text-button"
+            style={{ fontSize: 11, textDecoration: "underline", color: "var(--ink)" }}
+            onClick={() => setShowModal(true)}
+          >
+            Verify Proof →
+          </button>
+        </div>
+      </div>
+
+      {showModal && (
+        <AirgapCertificateModal
+          sessionId={sessionId}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ChatView
 // ---------------------------------------------------------------------------
 
@@ -282,7 +452,69 @@ function ChatView({ settings, setSettings }) {
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [listening, setListening] = useState(false);
+  const [speakingIndex, setSpeakingIndex] = useState(null);
   const abortRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  function toggleListen() {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      alert("Speech recognition is not supported in this browser. Try Chrome, Edge, or a WebSpeech-enabled browser.");
+      return;
+    }
+
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+
+    try {
+      const rec = new SpeechRec();
+      rec.continuous = false;
+      rec.interimResults = true;
+      rec.lang = "en-US";
+
+      rec.onstart = () => setListening(true);
+      rec.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map((r) => r[0].transcript)
+          .join("");
+        setPrompt(transcript);
+      };
+      rec.onerror = () => setListening(false);
+      rec.onend = () => setListening(false);
+
+      recognitionRef.current = rec;
+      rec.start();
+    } catch {
+      setListening(false);
+    }
+  }
+
+  function toggleSpeak(text, index) {
+    if (!window.speechSynthesis) return;
+
+    if (speakingIndex === index) {
+      window.speechSynthesis.cancel();
+      setSpeakingIndex(null);
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const cleanText = text
+      .replace(/```[\s\S]*?```/g, "Code block omitted.")
+      .replace(/[*_#`]/g, "");
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.rate = 1.05;
+    utterance.onend = () => setSpeakingIndex(null);
+    utterance.onerror = () => setSpeakingIndex(null);
+
+    setSpeakingIndex(index);
+    window.speechSynthesis.speak(utterance);
+  }
 
   async function loadSession(id) {
     if (!id) return;
@@ -427,6 +659,7 @@ function ChatView({ settings, setSettings }) {
         <section className="control-group sentry-mini">
           <h3>Network sentry</h3>
           <SentryBadge />
+          {sessionId && <AirgapLedgerBadge sessionId={sessionId} refreshTrigger={messages.length} />}
         </section>
       </aside>
 
@@ -439,7 +672,7 @@ function ChatView({ settings, setSettings }) {
               Documents, code, and generated work stay inside your workbench.
             </p>
           </div>
-          <span className="status-dot">Backend connected</span>
+          <span className="status-dot">● Proof of Air-Gap Active</span>
         </header>
         <ErrorNotice error={error} />
         <div className="message-list">
@@ -452,7 +685,19 @@ function ChatView({ settings, setSettings }) {
           )}
           {messages.map((message, index) => (
             <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
-              <div className="message-role">{message.role === "user" ? "You" : "Sovereign AI"}</div>
+              <div className="message-role" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>{message.role === "user" ? "You" : "Sovereign AI"}</span>
+                {message.role === "assistant" && (
+                  <button
+                    type="button"
+                    className="text-button"
+                    style={{ fontSize: 11, padding: 0 }}
+                    onClick={() => toggleSpeak(message.content, index)}
+                  >
+                    {speakingIndex === index ? "⏹️ Stop speech" : "🔊 Read aloud"}
+                  </button>
+                )}
+              </div>
               <div className="message-content">{message.content}</div>
               {message.selectedModel && (
                 <small className="model-chip">{message.selectedModel}</small>
@@ -508,6 +753,11 @@ function ChatView({ settings, setSettings }) {
               </button>
             )}
           </div>
+          {listening && (
+            <div className="voice-banner">
+              <span>● Tactical Voice Active: Listening… (Speak your question, click mic to finish)</span>
+            </div>
+          )}
           <div className="compose-line">
             <textarea
               value={prompt}
@@ -521,6 +771,15 @@ function ChatView({ settings, setSettings }) {
                 }
               }}
             />
+            <button
+              type="button"
+              className={`mic-button ${listening ? "listening" : ""}`}
+              onClick={toggleListen}
+              title={listening ? "Stop listening" : "Tactical Voice Dictation (Push-to-Talk)"}
+              aria-label="Dictate prompt"
+            >
+              {listening ? "⏹" : "🎙️"}
+            </button>
             <button
               className="send-button"
               disabled={busy || !prompt.trim()}
@@ -562,7 +821,10 @@ function ChatView({ settings, setSettings }) {
 // ModelHub
 // ---------------------------------------------------------------------------
 
-function ModelHub() {
+function ModelHub({ user }) {
+  const role = user?.role || "analyst";
+  const isAdmin = role === "admin";
+  const isAuditor = role === "auditor";
   const [tab, setTab] = useState("engines"); // "engines" | "weights" | "hf" | "quick"
   const [models, setModels] = useState([]);
   const [downloaded, setDownloaded] = useState([]);
@@ -781,6 +1043,12 @@ function ModelHub() {
       {notice && <div className="notice success">{notice}</div>}
       <ErrorNotice error={error} />
 
+      {isAuditor && (
+        <div className="notice" style={{ border: "1px solid #315380", background: "rgba(109, 182, 255, 0.1)", color: "#6db6ff" }}>
+          <strong>Auditor Access Mode:</strong> You have read-only compliance permissions. Model downloading, pulling, and deletion are restricted to administrators and analysts.
+        </div>
+      )}
+
       {/* Sub-tabs to clearly separate different model behaviors */}
       <nav className="hub-tabs">
         <button
@@ -899,16 +1167,18 @@ function ModelHub() {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <button
-                    className="text-button"
-                    style={{ color: "var(--orange)", fontSize: 12 }}
-                    onClick={() => deleteOllama(model.id)}
-                    title="Remove model from Ollama"
-                  >
-                    Delete engine
-                  </button>
-                </div>
+                {isAdmin && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button
+                      className="text-button"
+                      style={{ color: "var(--orange)", fontSize: 12 }}
+                      onClick={() => deleteOllama(model.id)}
+                      title="Remove model from Ollama"
+                    >
+                      Delete engine
+                    </button>
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -955,7 +1225,7 @@ function ModelHub() {
                   </div>
 
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
-                    {isGguf && (
+                    {isGguf && !isAuditor && (
                       <button
                         className="primary"
                         style={{ fontSize: 12, padding: "6px 12px" }}
@@ -965,14 +1235,16 @@ function ModelHub() {
                         {isLoading ? "Importing to Ollama…" : "Import to Ollama →"}
                       </button>
                     )}
-                    <button
-                      className="text-button"
-                      style={{ color: "var(--orange)", fontSize: 12 }}
-                      disabled={isLoading}
-                      onClick={() => deleteDownloaded(model.filename)}
-                    >
-                      Delete
-                    </button>
+                    {isAdmin && (
+                      <button
+                        className="text-button"
+                        style={{ color: "var(--orange)", fontSize: 12 }}
+                        disabled={isLoading}
+                        onClick={() => deleteDownloaded(model.filename)}
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -1455,18 +1727,19 @@ function Projects() {
     </div>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
 
-function SettingsPage({ onSettingsSaved }) {
-  const [models,    setModels]    = useState([]);
+function SettingsPage({ user, onSettingsSaved }) {
   const [form,      setForm]      = useState(null);
+  const [models,    setModels]    = useState([]);
   const [passwords, setPasswords] = useState({ currentPassword: "", newPassword: "" });
   const [message,   setMessage]   = useState("");
   const [error,     setError]     = useState("");
   const [busy,      setBusy]      = useState(true);
+  const [usersList, setUsersList] = useState([]);
+  const [governanceNotice, setGovernanceNotice] = useState("");
 
   useEffect(() => {
     Promise.all([api.userSettings(), api.models()])
@@ -1478,6 +1751,23 @@ function SettingsPage({ onSettingsSaved }) {
       .catch((e) => setError(e.message))
       .finally(() => setBusy(false));
   }, []);
+
+  useEffect(() => {
+    if (user?.role === "admin") {
+      api.users().then((res) => setUsersList(res.users || [])).catch(() => {});
+    }
+  }, [user]);
+
+  async function handleRoleChange(targetUsername, newRole) {
+    try {
+      await api.updateUserRole(targetUsername, newRole);
+      setGovernanceNotice(`Role updated: '${targetUsername}' is now ${newRole.toUpperCase()}.`);
+      const res = await api.users();
+      setUsersList(res.users || []);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   function update(key, value) {
     setForm((current) => {
@@ -1565,6 +1855,21 @@ function SettingsPage({ onSettingsSaved }) {
           <label>
             Email
             <input value={form.email || ""} disabled style={{ opacity: 0.6 }} />
+          </label>
+          <label>
+            Security role
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+              <span className="tag-chip accent" style={{ textTransform: "uppercase", fontWeight: 700 }}>
+                {form.role || user?.role || "analyst"}
+              </span>
+              <small className="muted">
+                {(form.role || user?.role) === "admin"
+                  ? "Administrator (Full access to model deletion, user governance, and system tuning)"
+                  : (form.role || user?.role) === "auditor"
+                  ? "Auditor (Read-only compliance mode — inspects proofs of air-gap and logs)"
+                  : "Analyst (Standard permissions for chat, project tasks, and RAG analysis)"}
+              </small>
+            </div>
           </label>
         </section>
 
@@ -1692,6 +1997,57 @@ function SettingsPage({ onSettingsSaved }) {
         </label>
         <button className="secondary" type="submit">Change password</button>
       </form>
+
+      {/* ── User Governance (Admin Only) ────────────────────────── */}
+      {user?.role === "admin" && (
+        <section className="settings-section" style={{ gridTemplateColumns: "1fr", marginTop: 24 }}>
+          <div>
+            <h2>User Governance & Role Management</h2>
+            <p className="muted">Assign security roles to local users (Admin, Analyst, Auditor).</p>
+          </div>
+          {governanceNotice && <div className="notice success">{governanceNotice}</div>}
+          <div style={{ overflowX: "auto" }}>
+            <table className="user-table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Display Name</th>
+                  <th>Email</th>
+                  <th>Assigned Role</th>
+                  <th>Registered</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usersList.map((u) => (
+                  <tr key={u.username}>
+                    <td><strong>{u.username}</strong></td>
+                    <td>{u.name}</td>
+                    <td>{u.email || "—"}</td>
+                    <td>
+                      {u.username === "admin" ? (
+                        <span className="tag-chip accent">PRIMARY ADMIN</span>
+                      ) : (
+                        <select
+                          value={u.role || "analyst"}
+                          onChange={(e) => handleRoleChange(u.username, e.target.value)}
+                          style={{ width: "auto", padding: "4px 8px", fontSize: 12 }}
+                        >
+                          <option value="analyst">Analyst (Standard)</option>
+                          <option value="auditor">Auditor (Read-Only)</option>
+                          <option value="admin">Administrator (Full)</option>
+                        </select>
+                      )}
+                    </td>
+                    <td style={{ color: "var(--muted)", fontSize: 12 }}>
+                      {u.created_at ? new Date(u.created_at).toLocaleDateString() : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -1886,16 +2242,19 @@ export default function App() {
           ))}
         </div>
         <div className="user-menu">
+          <span className="tag-chip accent" style={{ textTransform: "uppercase", fontSize: 10, letterSpacing: "0.08em", fontWeight: 700 }}>
+            {user.role || "analyst"}
+          </span>
           <span>{user.name || user.username}</span>
           <button onClick={logout}>Sign out</button>
         </div>
       </nav>
 
-      {page === "chat" && <ChatView settings={settings} setSettings={setSettings} />}
-      {page === "models" && <ModelHub />}
-      {page === "projects" && <Projects />}
-      {page === "status" && <Status />}
-      {page === "settings" && <SettingsPage onSettingsSaved={(saved) => {
+      {page === "chat" && <ChatView settings={settings} setSettings={setSettings} user={user} />}
+      {page === "models" && <ModelHub user={user} />}
+      {page === "projects" && <Projects user={user} />}
+      {page === "status" && <Status user={user} />}
+      {page === "settings" && <SettingsPage user={user} onSettingsSaved={(saved) => {
         setSettings({
           modelId: saved.default_model,
           temperature: saved.default_temperature,

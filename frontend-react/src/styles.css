@@ -95,6 +95,29 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
 .badge-cancelled { color: var(--muted); border-color: var(--line); background: rgba(145,166,154,0.1); }
 .badge-error { color: #ffb19d; border-color: #854b3c; background: rgba(133,75,60,0.2); }
 
+/* Air-Gap Certificate Modal & Ledger */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(4px); display: grid; place-items: center; z-index: 1000; padding: 20px; }
+.modal-card { width: min(100%, 740px); max-height: 90vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 28px; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4); }
+.cert-header { border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.cert-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.cert-metric { background: var(--panel-light); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 4px; }
+.cert-metric small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.cert-metric strong { font-size: 14px; }
+.cert-hash-box { background: #091411; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font-family: monospace; font-size: 11px; color: var(--accent); word-break: break-all; margin-top: 4px; }
+.audit-list { max-height: 220px; overflow-y: auto; display: grid; gap: 8px; padding-right: 4px; }
+.audit-item { background: #0d1b17; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; gap: 8px; }
+
+/* Tactical Voice & Mic */
+.mic-button { flex: 0 0 48px; height: 48px; border-radius: 7px; background: #132822; border: 1px solid var(--line); font-size: 20px; cursor: pointer; display: grid; place-items: center; transition: all 0.2s; color: var(--ink); }
+.mic-button:hover { border-color: var(--accent); }
+.mic-button.listening { background: rgba(220, 53, 69, 0.2); border-color: #ff4d4d; animation: pulse 1.2s infinite; }
+.voice-banner { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #ff6b6b; padding: 4px 0; }
+
+/* User Governance Table */
+.user-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.user-table th, .user-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+.user-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+
 .settings-form { display: grid; gap: 18px; }.settings-section { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(240px, 1.2fr); gap: 16px 38px; padding: 22px 0; border-top: 1px solid var(--line); }.settings-section h2 { font: 600 17px 'Space Grotesk'; margin-bottom: 7px; }.settings-section > label { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }.settings-section > label + label { grid-column: 2; }.settings-section output { color: var(--ink); justify-self: end; margin-bottom: -22px; }.settings-form > .primary { justify-self: start; }.password-section { margin-top: 28px; }.password-section .secondary { justify-self: start; }.settings-section > label:first-of-type { grid-column: 2; }.settings-section > label:nth-of-type(2), .settings-section > label:nth-of-type(3) { grid-column: 2; }
 
 footer { max-width: 1440px; margin: 18px auto 0; color: #60786b; font-size: 11px; text-align: right; }
